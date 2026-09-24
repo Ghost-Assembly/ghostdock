@@ -1,0 +1,42 @@
+[package]
+name = "web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+# Ships as wasm32. Its pure pieces (chart geometry, encoders) are also
+# tested natively by `just test`; other native recipes exclude it.
+[dependencies]
+shared = { workspace = true }
+# Time labels on charts; already in the tree through `shared`.
+chrono = { workspace = true }
+leptos = { workspace = true }
+leptos_router = { workspace = true }
+gloo-net = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+wasm-bindgen = { workspace = true }
+web-sys = { workspace = true, features = [
+    "console",
+    "Event",
+    "EventSource",
+    "EventTarget",
+    "MessageEvent",
+    "WebSocket",
+    "Window",
+    "Location",
+    "Element",
+    "CloseEvent",
+    "Document",
+    "HtmlElement",
+    "AbortSignal",
+    "MouseEvent",
+    "PointerEvent",
+    "DomRect",
+    "Selection",
+    "Node",
+] }

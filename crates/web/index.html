@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#171b21" />
+    <meta name="description" content="Container stacks, readable at a glance." />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link data-trunk rel="copy-file" href="manifest.webmanifest" />
+    <link data-trunk rel="copy-file" href="icon.svg" />
+    <link data-trunk rel="copy-file" href="sw.js" />
+    <link data-trunk rel="copy-dir" href="icons" />
+    <title>GhostDock</title>
+    <link data-trunk rel="css" href="style.css" />
+    <!-- rustc 1.98 emits bulk-memory instructions, and saturating
+         float-to-integer ones for `as` casts; wasm-opt must be told to
+         accept them or it rejects its own input. -->
+    <link
+      data-trunk
+      rel="rust"
+      data-wasm-opt="z"
+      data-wasm-opt-params="--enable-bulk-memory --enable-nontrapping-float-to-int"
+      data-cargo-profile="wasm-release"
+    />
+  </head>
+  <body>
+    <!-- Keeps the app itself available offline. Browsers allow this only
+         over HTTPS or on localhost; elsewhere it quietly does nothing and the
+         app works as before, online only. -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
+      }
+    </script>
+  </body>
+</html>

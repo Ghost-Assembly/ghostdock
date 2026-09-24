@@ -1,0 +1,26 @@
+# Secret scanning configuration.
+#
+# Extends the stock rules rather than replacing them: an allowlist should
+# narrow what is reported, never change what is looked for.
+[extend]
+useDefault = true
+
+# The WebSocket handshake key from RFC 6455.
+#
+# `dGhlIHNhbXBsZSBub25jZQ==` is base64 for "the sample nonce" and is the
+# example value in the specification. Tests that build a handshake by hand
+# have to send a well-formed key, and this is the canonical one. It is a
+# protocol constant, not a credential.
+#
+# `condition = "AND"` matters: with the default, matching *either* the path
+# or the regex is enough, which exempts the whole file. Verified by planting
+# an AWS key and a GitHub token in that file and confirming both are still
+# reported.
+#
+# Review by: 2027-03-01. This one does not rot -- the RFC is fixed -- but a
+# dated entry is one someone will actually look at again.
+[[allowlists]]
+description = "RFC 6455 example WebSocket key in handshake tests"
+condition = "AND"
+regexes = ['dGhlIHNhbXBsZSBub25jZQ==']
+paths = ['crates/server/tests/api\.rs']

@@ -1,0 +1,115 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/shared",
+    "crates/domain",
+    "crates/docker",
+    "crates/compose",
+    "crates/gitsync",
+    "crates/registry",
+    "crates/store",
+    "crates/server",
+    "crates/web",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+repository = "https://github.com/Ghost-Assembly/ghostdock"
+
+# Versions verified against crates.io on 2026-09-22.
+[workspace.dependencies]
+# Internal
+shared = { path = "crates/shared" }
+domain = { path = "crates/domain" }
+docker = { path = "crates/docker" }
+compose = { path = "crates/compose" }
+gitsync = { path = "crates/gitsync" }
+registry = { path = "crates/registry" }
+store = { path = "crates/store" }
+
+# Runtime
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "process", "fs", "io-util", "net", "signal", "sync", "time"] }
+futures = "0.3.34"
+tokio-stream = { version = "0.1.19", features = ["sync"] }
+
+# Serialisation — `shared` may depend ONLY on these (must build for wasm32).
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+chrono = { version = "0.4.45", features = ["serde"] }
+uuid = { version = "1.26.1", features = ["v4", "serde"] }
+
+# Errors & tracing
+thiserror = "2.0.20"
+anyhow = "1.0.104"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+# HTTP server
+axum = { version = "0.8.9", features = ["ws"] }
+tower = { version = "0.5.3", features = ["util"] }
+http-body-util = "0.1.5"
+tower-http = { version = "0.7.1", features = ["fs", "trace", "compression-gzip", "compression-br"] }
+# tower-sessions declares SessionStore with #[async_trait], so
+# implementations must use the same macro.
+async-trait = "0.1.92"
+tower-sessions = "0.15.0"
+
+# Persistence
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "sqlite", "chrono", "uuid", "migrate"] }
+
+# Docker (read path only)
+bollard = "0.21.1"
+
+# Web client (wasm only)
+leptos = { version = "0.8.20", features = ["csr"] }
+leptos_router = "0.8.15"
+gloo-net = { version = "0.7.0", default-features = false, features = ["http", "json"] }
+web-sys = "0.3.105"
+wasm-bindgen = "0.2.128"
+
+# Secrets at rest. Never hand-rolled: XChaCha20-Poly1305 from RustCrypto,
+# whose 192-bit random nonce makes per-value nonces safe without a counter.
+chacha20poly1305 = "0.11.0"
+base64 = "0.23.1"
+zeroize = "1.9.0"
+getrandom = "0.4.3"
+# API token hashing. RustCrypto; already in the tree through other crates.
+sha2 = "0.11.0"
+
+# Auth & registry client
+argon2 = "0.6.0"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "http2"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+todo = "warn"
+dbg_macro = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# SQLite is C compiled by the build script; unoptimised it is several times
+# slower, which makes debug-build timings (the metrics read budget) lie.
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3
+
+# The web client only.
+#
+# `panic = "abort"` removes the unwinding machinery, which is a large part of
+# a wasm bundle and buys nothing in a browser. It is deliberately NOT in the
+# release profile: on the server a panicking handler should become a 500, not
+# take the process down with it.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+panic = "abort"
+lto = "fat"
+codegen-units = 1

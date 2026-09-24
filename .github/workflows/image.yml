@@ -1,0 +1,102 @@
+name: image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Each architecture builds on its own native runner. Emulating arm64 on an
+  # x86 runner compiles Rust roughly an order of magnitude slower.
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          install: true
+          # No cache in a workflow that publishes. A pull request could fill
+          # a shared cache with a tampered tool, which a later build on main
+          # would restore and use to produce a published image. This job only
+          # needs just and trivy -- the compile happens inside docker build --
+          # so fetching them fresh costs seconds.
+          cache: false
+
+      - name: build
+        run: docker buildx build --platform "linux/${ARCH}" --load --tag ghostdock:ci .
+
+      # Scans what is actually installed, including the Debian packages the
+      # server shells out to. A pull request that makes the image vulnerable
+      # fails here rather than after it is published.
+      - name: scan
+        run: just security-image ghostdock:ci
+
+      - name: push
+        if: github.event_name == 'push'
+        env:
+          # Through the environment, never interpolated into the script, so a
+          # crafted value cannot become shell.
+          OWNER: ${{ github.repository_owner }}
+          SHA: ${{ github.sha }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          image="ghcr.io/${OWNER,,}/ghostdock"
+          printf '%s' "$TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+          docker tag ghostdock:ci "${image}:sha-${SHA}-${ARCH}"
+          docker push "${image}:sha-${SHA}-${ARCH}"
+
+  # Joins the per-architecture images into one multi-platform tag.
+  publish:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    env:
+      OWNER: ${{ github.repository_owner }}
+      SHA: ${{ github.sha }}
+      REF_NAME: ${{ github.ref_name }}
+      REF_TYPE: ${{ github.ref_type }}
+      TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ACTOR: ${{ github.actor }}
+    steps:
+      - name: publish
+        run: |
+          image="ghcr.io/${OWNER,,}/ghostdock"
+          printf '%s' "$TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+
+          tags=(--tag "${image}:sha-${SHA}")
+          if [[ "$REF_TYPE" == "tag" ]]; then
+            tags+=(--tag "${image}:${REF_NAME#v}" --tag "${image}:latest")
+          else
+            tags+=(--tag "${image}:edge")
+          fi
+
+          docker buildx imagetools create "${tags[@]}" \
+            "${image}:sha-${SHA}-amd64" \
+            "${image}:sha-${SHA}-arm64"

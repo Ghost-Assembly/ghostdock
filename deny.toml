@@ -1,0 +1,45 @@
+[graph]
+all-features = true
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    # Mozilla root CA bundle shipped by webpki-root-certs; permissive data licence.
+    "CDLA-Permissive-2.0",
+    # Boost Software License (xxhash-rust). Permissive and OSI-approved -- not
+    # to be confused with the Business Source License, which is not.
+    "BSL-1.0",
+]
+
+[advisories]
+yanked = "deny"
+
+# Both entries below are UNMAINTAINED notices, not vulnerabilities, and both
+# crates are proc-macros: they run during the build and emit no code into the
+# shipped wasm binary, so nothing from them executes in a browser. They arrive
+# through Leptos and cannot be removed without dropping it.
+#
+# Revisit whenever Leptos is upgraded, and treat either being reclassified as a
+# vulnerability as a reason to reconsider the frontend framework.
+# Review by: 2027-03-01.
+ignore = [
+    # `paste`, via leptos -> either_of.
+    "RUSTSEC-2024-0436",
+    # `proc-macro-error2`, via leptos_macro.
+    "RUSTSEC-2026-0173",
+]
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

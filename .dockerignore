@@ -1,0 +1,28 @@
+# Secrets. The build context is sent to the daemon in full, so anything not
+# excluded here can end up in an image layer.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Build output and caches: large, and rebuilt inside the image anyway.
+target/
+crates/web/dist/
+crates/web/.trunk/
+node_modules/
+package.json
+package-lock.json
+
+# Local state.
+.dev-data/
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Not needed to build.
+.git/
+.github/
+tests/
+docs/

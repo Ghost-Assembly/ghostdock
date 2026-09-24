@@ -1,0 +1,52 @@
+[package]
+name = "server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ghostdock"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+shared = { workspace = true }
+domain = { workspace = true }
+docker = { workspace = true }
+compose = { workspace = true }
+gitsync = { workspace = true }
+registry = { workspace = true }
+store = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+chrono = { workspace = true }
+tower = { workspace = true }
+# Already in the tree through axum's WebSocket support; a real client for the
+# event socket test.
+tokio-tungstenite = "0.29.0"
+tower-http = { workspace = true }
+tower-sessions = { workspace = true }
+async-trait = { workspace = true }
+argon2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+# statvfs for disk space; already in the tree.
+rustix = { version = "1.1.5", features = ["fs"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { workspace = true, features = ["macros", "rt"] }
+http-body-util = { workspace = true }
+tower = { workspace = true }
+# Already in the tree through axum's WebSocket support; a real client for the
+# event socket test.
+tokio-tungstenite = "0.29.0"

@@ -1,0 +1,29 @@
+# Toolchain pins. mise owns tool *versions*; just owns commands; cargo owns
+# dependencies. CI reads this same file via jdx/mise-action, so local and CI
+# agree by construction.
+
+[tools]
+rust = { version = "1.98.1", profile = "minimal", components = ["rustfmt", "clippy"], targets = ["wasm32-unknown-unknown"] }
+just = "1.58.0"
+# Lets the cargo: backend below install prebuilt binaries instead of
+# compiling them from source.
+cargo-binstall = "1.23.0"
+# NOTE: this is trunk-rs, the Rust wasm bundler. Do NOT use mise's bare
+# `trunk`, which resolves to npm:@trunkio/launcher — Trunk.io, an unrelated
+# code-quality tool.
+"cargo:trunk" = "0.21.14"
+"cargo:cargo-deny" = "0.20.2"
+
+# Scanners run by `just security`. All free for any visibility; see the
+# security-scanning notes in the design doc for what was chosen and why.
+gitleaks = "8.30.1"
+
+# Only for the browser tests, which drive Chromium through Playwright.
+node = "24.21.0"
+hadolint = "2.15.1"
+trivy = "0.74.0"
+actionlint = "1.7.12"
+zizmor = "1.30.1"
+
+[env]
+RUST_LOG = "info,ghostdock=debug"

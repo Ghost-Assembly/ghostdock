@@ -1,0 +1,211 @@
+//! What is waiting to be applied.
+//!
+//! The point of this screen is the word "why". A tool that redeploys on a
+//! timer can tell you it did something; this says what is about to change
+//! before you agree to it.
+
+use leptos::prelude::*;
+use shared::update::StackUpdate;
+
+use crate::api;
+use crate::screen::Screen;
+
+#[derive(Clone, Debug, PartialEq)]
+enum Load {
+    Loading,
+    Ready(Vec<StackUpdate>),
+    Failed(String),
+}
+
+#[component]
+pub fn Updates() -> impl IntoView {
+    let load = RwSignal::new(Load::Loading);
+    let checking = RwSignal::new(false);
+
+    let screen = Screen::new();
+    let refresh = move || {
+        screen.load(async move {
+            load.set(match api::updates(1).await {
+                Ok(list) => Load::Ready(list),
+                Err(e) => Load::Failed(e.message),
+            });
+        });
+    };
+    Effect::new(move |_| refresh());
+
+    // Checking every stack at once is the action a person actually wants
+    // here; the background sweep is hourly, which is far too slow for
+    // someone who has just pushed a commit.
+    let check_all = move |_| {
+        if checking.get() {
+            return;
+        }
+        checking.set(true);
+        let ids: Vec<i64> = match load.get_untracked() {
+            Load::Ready(list) => list.iter().map(|u| u.stack.id).collect(),
+            _ => Vec::new(),
+        };
+        // Every check runs, whether or not anyone stays on this screen.
+        screen.act(
+            async move {
+                for id in ids {
+                    let _ = api::check_stack(id).await;
+                }
+            },
+            move |()| {
+                refresh();
+                checking.set(false);
+            },
+        );
+    };
+
+    view! {
+        <header class="topbar">
+            <h1 class="wordmark">"Updates"</h1>
+            <button class="topbar-link" type="button" on:click=check_all disabled=move || checking.get()>
+                {move || if checking.get() { "Checking" } else { "Check now" }}
+            </button>
+        </header>
+
+        {move || match load.get() {
+            Load::Loading => view! { <p class="state-note">"Loading"</p> }.into_any(),
+            Load::Failed(message) => view! {
+                <div class="state-note">
+                    <p>"Could not read update status."</p>
+                    <p>{message}</p>
+                </div>
+            }
+            .into_any(),
+            Load::Ready(list) if list.is_empty() => view! {
+                <div class="state-note">
+                    <p>"No stacks to check."</p>
+                    <p>"Register one and GhostDock will watch it for changes."</p>
+                </div>
+            }
+            .into_any(),
+            Load::Ready(list) => view! { <Board updates=list /> }.into_any(),
+        }}
+    }
+}
+
+#[component]
+fn Board(updates: Vec<StackUpdate>) -> impl IntoView {
+    let waiting: Vec<StackUpdate> = updates
+        .iter()
+        .filter(|u| u.reason.is_some())
+        .cloned()
+        .collect();
+    // A stack whose check failed is neither waiting nor current, and saying
+    // it is current would be a lie of omission.
+    let unknown: Vec<StackUpdate> = updates
+        .iter()
+        .filter(|u| {
+            u.reason.is_none() && (u.status.error.is_some() || u.status.checked_at.is_none())
+        })
+        .cloned()
+        .collect();
+    let current: Vec<StackUpdate> = updates
+        .iter()
+        .filter(|u| u.reason.is_none() && u.status.error.is_none() && u.status.checked_at.is_some())
+        .cloned()
+        .collect();
+
+    // "Current" is only said of what has been checked. Nothing checked yet
+    // and nothing found are different answers, and only one is reassuring.
+    let (verdict, tone) = if waiting.is_empty() && current.is_empty() {
+        ("Not checked yet".to_owned(), "quiet")
+    } else if waiting.is_empty() && !unknown.is_empty() {
+        ("No updates found".to_owned(), "quiet")
+    } else if waiting.is_empty() {
+        ("Everything is current".to_owned(), "quiet")
+    } else if waiting.len() == 1 {
+        ("1 stack has an update".to_owned(), "degraded")
+    } else {
+        (format!("{} stacks have updates", waiting.len()), "degraded")
+    };
+
+    let has_waiting = !waiting.is_empty();
+    let has_unknown = !unknown.is_empty();
+    let has_current = !current.is_empty();
+
+    view! {
+        <section class="verdict">
+            <p class="verdict-line" data-tone=tone>{verdict}</p>
+            <p class="verdict-count">
+                {format!(
+                    "{} {} watched{}",
+                    updates.len(),
+                    if updates.len() == 1 { "stack" } else { "stacks" },
+                    if unknown.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", {} not checked or failed", unknown.len())
+                    },
+                )}
+            </p>
+        </section>
+
+        <Show when=move || has_waiting>
+            <h2 class="group-heading">"Waiting"</h2>
+            <UpdateRows updates=waiting.clone() state="degraded" />
+        </Show>
+
+        <Show when=move || has_unknown>
+            <h2 class="group-heading">"Not checked"</h2>
+            <UpdateRows updates=unknown.clone() state="stopped" />
+        </Show>
+
+        <Show when=move || has_current>
+            <h2 class="group-heading">"Up to date"</h2>
+            <UpdateRows updates=current.clone() state="running" />
+        </Show>
+    }
+}
+
+#[component]
+fn UpdateRows(updates: Vec<StackUpdate>, state: &'static str) -> impl IntoView {
+    view! {
+        <ul class="rows">
+            {updates
+                .into_iter()
+                .map(|update| {
+                    let detail = update
+                        .reason
+                        .clone()
+                        .or_else(|| update.status.error.clone().map(|e| shorten(&e)))
+                        .unwrap_or_else(|| {
+                            if update.status.checked_at.is_some() {
+                                "up to date".to_owned()
+                            } else {
+                                "not checked yet".to_owned()
+                            }
+                        });
+                    let badge = if update.auto_apply { "auto" } else { "" };
+                    let href = format!("/stacks/{}", update.stack.id);
+                    view! {
+                        <li class="row">
+                            <a class="row-link" href=href>
+                                <span class="row-bar" data-state=state></span>
+                                <span class="row-name">{update.stack.name.clone()}</span>
+                                <span class="row-detail">{detail}</span>
+                                <span class="row-count">{badge}</span>
+                            </a>
+                        </li>
+                    }
+                })
+                .collect_view()}
+        </ul>
+    }
+}
+
+/// Keeps a row readable when a check failed with a long message.
+///
+/// The whole text is on the stack's own screen; this is a summary line.
+fn shorten(message: &str) -> String {
+    let first = message.lines().next().unwrap_or(message).trim();
+    if first.chars().count() > 70 {
+        format!("{}…", first.chars().take(69).collect::<String>())
+    } else {
+        first.to_owned()
+    }
+}

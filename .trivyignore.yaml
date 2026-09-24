@@ -1,0 +1,18 @@
+# Findings deliberately not acted on. Each carries its reasoning and an
+# expiry: trivy reports the finding again once `expired_at` passes, so every
+# suppression is a decision that gets re-made rather than forgotten.
+
+misconfigurations:
+  - id: DS-0002
+    paths:
+      - Dockerfile
+    statement: >-
+      Runs as root on purpose. GhostDock needs the host's Docker socket, and any
+      process that can reach that socket can start a privileged container
+      with the host filesystem mounted -- so code execution in GhostDock is host
+      root whatever user the process runs as. A non-root user must still be
+      given the socket for GhostDock to function, which leaves the blast radius
+      unchanged while requiring each host's socket group id to be passed in,
+      the most common failure when deploying socket-mounting tools. Revisit
+      if GhostDock ever stops needing the socket, or gains a rootless mode.
+    expired_at: 2027-03-01

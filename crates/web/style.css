@@ -1,0 +1,980 @@
+/* GhostDock — an operator's status board.
+ *
+ * One rule governs colour: colour means state. Chrome is achromatic, and the
+ * only saturated values in the interface are the four state colours below.
+ * Nothing decorative is ever coloured, so a spot of colour always means
+ * something needs reading.
+ */
+
+:root {
+  --ground: #171b21;
+  --raised: #1e242c;
+  --line: #2c3542;
+  --line-soft: #232a33;
+  --ink: #e4e8ee;
+  --ink-dim: #8d99a8;
+  --ink-faint: #646f7e;
+
+  /* State. The only saturated colours in the product. */
+  --run: #3f9e7c;
+  --degraded: #d2a24c;
+  --bad: #d0564e;
+  /* Stopped is grey on purpose: stopping a stack is a decision, not a fault,
+   * and colouring it red would cry wolf on every intentional shutdown. */
+  --off: #7c8899;
+
+  --gutter: 1rem;
+  --radius: 6px;
+  --nav-height: 3.5rem;
+  --sidebar: 13.5rem;
+
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --ground: #f2f4f7;
+    --raised: #ffffff;
+    --line: #dce1e8;
+    --line-soft: #e8ecf1;
+    --ink: #1a1f26;
+    --ink-dim: #5a6675;
+    --ink-faint: #8a95a3;
+    --run: #2f7d60;
+    --degraded: #8f6c22;
+    --bad: #b2413a;
+    --off: #6b7686;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 1rem;
+  line-height: 1.5;
+  /* This screen is mostly figures — 2/2, 18080:80, uptimes. Tabular numerals
+   * keep them aligned down a column so the eye can scan rather than read. */
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ---- shell ------------------------------------------------------------ */
+
+.shell {
+  max-width: 44rem;
+  margin: 0 auto;
+  padding: 0 var(--gutter) calc(var(--nav-height) + 2rem);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 0 0.75rem;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.wordmark {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  margin: 0;
+}
+
+.host-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8125rem;
+  color: var(--ink-dim);
+  font-family: var(--mono);
+}
+
+.host-tag::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--run);
+}
+
+.host-tag[data-reachable="false"]::before {
+  background: var(--bad);
+}
+
+/* Navigation in the topbar. Deliberately not `.host-tag`: that carries the
+ * reachability dot, and a green dot beside "Back" states something untrue. */
+.topbar-link {
+  font-size: 0.875rem;
+  color: var(--ink-dim);
+  text-decoration: none;
+  padding: 0.25rem 0;
+  /* Also used on a <button>, which otherwise arrives with the browser's own
+   * grey chrome and reads as a different kind of control from its neighbours. */
+  background: none;
+  border: 0;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.topbar-link:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.topbar-link:hover,
+.topbar-link:focus-visible {
+  color: var(--ink);
+}
+
+/* ---- verdict ---------------------------------------------------------- */
+
+/* The hero. One sentence answering "is everything fine?", which is the only
+ * question this screen exists to answer. */
+.verdict {
+  padding: 1.75rem 0 1.25rem;
+}
+
+.verdict-line {
+  margin: 0;
+  font-size: clamp(1.5rem, 6vw, 2rem);
+  font-weight: 500;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+.verdict-line[data-tone="bad"] {
+  color: var(--bad);
+}
+
+.verdict-line[data-tone="degraded"] {
+  color: var(--degraded);
+}
+
+.verdict-count {
+  margin: 0.5rem 0 0;
+  color: var(--ink-dim);
+  font-size: 0.9375rem;
+}
+
+/* ---- groups and rows -------------------------------------------------- */
+
+.group-heading {
+  margin: 1.5rem 0 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--ink-dim);
+}
+
+.rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--line-soft);
+}
+
+.row {
+  border-bottom: 1px solid var(--line-soft);
+}
+
+/* The left bar is the design's load-bearing device: 25 rows can be read by
+ * their left edge alone, without reading a single word. */
+.row-link {
+  /* A drag across a row selects its text rather than dragging the link. */
+  -webkit-user-drag: none;
+  display: grid;
+  grid-template-columns: 4px 1fr auto;
+  align-items: center;
+  gap: 0 0.875rem;
+  min-height: 3.25rem;
+  padding: 0.625rem 0.25rem;
+  color: inherit;
+  text-decoration: none;
+  background: none;
+  border: 0;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.row-bar {
+  /* Spans both text lines. If it only covered the name, the bars would not
+   * line up into a continuous edge, and reading a list by its left edge --
+   * the point of the whole device -- would not work. */
+  grid-row: 1 / span 2;
+  align-self: stretch;
+  border-radius: 2px;
+  background: var(--off);
+}
+
+.row-bar[data-state="running"] {
+  background: var(--run);
+}
+.row-bar[data-state="degraded"] {
+  background: var(--degraded);
+}
+.row-bar[data-state="unhealthy"] {
+  background: var(--bad);
+}
+
+.row-name {
+  font-family: var(--mono);
+  font-size: 0.9375rem;
+  overflow-wrap: anywhere;
+}
+
+.row-detail {
+  grid-column: 2;
+  color: var(--ink-dim);
+  font-size: 0.8125rem;
+}
+
+.row-count {
+  grid-row: 1 / span 2;
+  grid-column: 3;
+  color: var(--ink-dim);
+  font-size: 0.875rem;
+  font-family: var(--mono);
+}
+
+/* ---- bottom navigation ------------------------------------------------ */
+
+/* Bottom, not a sidebar: this is used one-handed, and the bottom third of a
+ * phone is the only comfortably reachable part. */
+.nav {
+  position: fixed;
+  inset: auto 0 0 0;
+  display: flex;
+  background: var(--raised);
+  border-top: 1px solid var(--line);
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+.nav-item {
+  flex: 1;
+  min-height: var(--nav-height);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-dim);
+  text-decoration: none;
+  font-size: 0.875rem;
+  background: none;
+  border: 0;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.nav-item[aria-current="page"] {
+  color: var(--ink);
+  box-shadow: inset 0 2px 0 var(--ink);
+}
+
+/* A second destructive action after the first one's explanation. */
+.entry-note + .button-danger {
+  margin-top: 1rem;
+}
+
+/* The wordmark belongs to the sidebar; on a phone each screen names itself. */
+.nav-brand {
+  display: none;
+}
+
+/* ---- forms ------------------------------------------------------------ */
+
+/* Anchored low rather than floated in the middle: the fields and the button
+ * sit where a thumb already is. */
+.entry {
+  min-height: 100dvh;
+  max-width: 24rem;
+  margin: 0 auto;
+  padding: 1rem var(--gutter) 2rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 1.5rem;
+}
+
+.entry-heading {
+  margin: 0 0 0.375rem;
+  font-size: 1.5rem;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+}
+
+.entry-note {
+  margin: 0;
+  color: var(--ink-dim);
+  font-size: 0.9375rem;
+}
+
+.field {
+  display: block;
+  margin-bottom: 1rem;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 0.375rem;
+  font-size: 0.875rem;
+  color: var(--ink-dim);
+}
+
+.field-input {
+  width: 100%;
+  min-height: 2.875rem;
+  padding: 0 0.75rem;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink);
+  font: inherit;
+}
+
+.field-input:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: -1px;
+}
+
+.button {
+  width: 100%;
+  min-height: 2.875rem;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--ink);
+  color: var(--ground);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.notice {
+  margin: 0 0 1rem;
+  padding: 0.625rem 0.75rem;
+  border-left: 3px solid var(--bad);
+  background: var(--raised);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  font-size: 0.875rem;
+}
+
+/* ---- empty and loading ------------------------------------------------ */
+
+.state-note {
+  padding: 2.5rem 0;
+  color: var(--ink-dim);
+}
+
+.state-note p {
+  margin: 0 0 0.5rem;
+}
+
+/* ---- stack actions ---------------------------------------------------- */
+
+/* Deploy gets the full width and the solid fill; the other two are quieter,
+ * because reaching for Stop by accident on a phone is easy and expensive. */
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.625rem;
+  margin: 1.25rem 0 0.5rem;
+}
+
+.actions .button:first-child {
+  grid-column: 1 / -1;
+}
+
+/* A pair of equal choices, rather than one primary action and its
+ * alternatives, so neither is given the full width. */
+.actions.actions-pair .button:first-child {
+  grid-column: auto;
+}
+
+.button-quiet {
+  background: none;
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+.button-danger {
+  background: none;
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+a.button {
+  display: block;
+  text-align: center;
+  text-decoration: none;
+  line-height: 2.75rem;
+}
+
+/* ---- output ----------------------------------------------------------- */
+
+/* Compose's own output, verbatim. Long lines scroll inside the pane rather
+ * than widening the page, which is what breaks a phone layout. */
+.log {
+  margin: 0 0 1rem;
+  padding: 0.75rem;
+  max-height: 18rem;
+  overflow: auto;
+  background: var(--raised);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  white-space: pre;
+  -webkit-overflow-scrolling: touch;
+}
+
+.field-code {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  padding: 0.625rem 0.75rem;
+  min-height: 12rem;
+  resize: vertical;
+  /* A compose file is indentation-sensitive, so wrapping it would misrepresent
+   * what the user typed. */
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+}
+
+/* ---- inline row actions ----------------------------------------------- */
+
+/* A destructive action inside a row. Quiet, because it sits beside content
+ * a thumb is already scrolling past. */
+.row-action {
+  grid-row: 1 / span 2;
+  grid-column: 3;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink-dim);
+  font: inherit;
+  font-size: 0.8125rem;
+  padding: 0.375rem 0.625rem;
+  min-height: 2.25rem;
+  cursor: pointer;
+}
+
+.row-action:hover,
+.row-action:focus-visible {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+/* Single-line monospace input: refs and paths are identifiers, not prose. */
+.field-mono {
+  font-family: var(--mono);
+  font-size: 0.875rem;
+}
+
+select.field-input {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink-dim) 50%),
+    linear-gradient(135deg, var(--ink-dim) 50%, transparent 50%);
+  background-position: right 1rem center, right 0.7rem center;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 2rem;
+}
+
+.entry-note a {
+  color: var(--ink);
+}
+
+/* A note directly under the topbar would otherwise sit on its rule. */
+.topbar + .entry-note {
+  margin-top: 0.875rem;
+}
+
+/* A log pane is the reason someone opened the app at all; give it room. */
+.log-tall {
+  max-height: 60vh;
+}
+
+.log-line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* stderr, where the answer usually is. */
+.log-stderr {
+  color: var(--bad);
+}
+
+/* A secondary way in from a row, without turning the row into two links. */
+.row-aside {
+  display: block;
+  padding: 0.5rem 0.25rem 0.75rem 1.125rem;
+  font-size: 0.8125rem;
+  color: var(--ink-dim);
+  text-decoration: none;
+}
+
+.row-aside:hover,
+.row-aside:focus-visible {
+  color: var(--ink);
+}
+
+/* On a phone the other ways in share one line beneath the row. */
+.row:has(> .row-aside) {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.row:has(> .row-aside) > .row-link {
+  flex: 1 0 100%;
+}
+
+/* ---- permission choices ------------------------------------------------- */
+
+.checks {
+  margin: 0 0 1rem;
+  padding: 0;
+  border: 0;
+}
+
+.check {
+  display: grid;
+  grid-template-columns: 1.5rem 1fr;
+  column-gap: 0.625rem;
+  align-items: start;
+  min-height: 2.75rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--line-soft);
+  cursor: pointer;
+}
+
+.check input {
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0.125rem 0 0;
+  accent-color: var(--ink);
+}
+
+.check-name {
+  font-family: var(--mono);
+  font-size: 0.875rem;
+}
+
+.check-detail {
+  grid-column: 2;
+  color: var(--ink-dim);
+  font-size: 0.8125rem;
+}
+
+/* A secret shown once. One tap selects all of it, so the phone's own copy
+ * menu works where the clipboard API is unavailable (plain HTTP). */
+.secret {
+  margin: 0 0 0.5rem;
+  padding: 0.75rem;
+  background: var(--raised);
+  border: 1px solid var(--ink);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 0.875rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: all;
+  -webkit-user-select: all;
+}
+
+.checks-area {
+  padding: 0.75rem 0 0.25rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--ink-dim);
+}
+
+/* A toggle that is on reads as the filled button: the difference between
+ * following and not must be visible without reading the label. */
+.button-quiet[aria-pressed="true"] {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--ground);
+}
+
+/* Shown by the panic hook when the app has stopped. Covers everything, so
+ * nothing dead underneath can be tapped. */
+.crashed {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  align-content: center;
+  gap: 1rem;
+  padding: 2rem var(--gutter);
+  background: var(--ground);
+}
+
+/* Rows out of view are neither laid out nor painted, so a long log costs
+ * about what the visible part of it costs. The intrinsic size keeps the
+ * scrollbar honest for rows the browser has skipped. */
+.log-line {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 1.2rem;
+}
+
+/* ---- desktop ------------------------------------------------------------ *
+ *
+ * The phone layout is the primary one; this adapts it rather than replacing
+ * it. Navigation moves to a sidebar, which a pointer reaches as easily as a
+ * thumb reaches the bottom bar. The board flows into columns, the stack
+ * page splits into what is happening and how it is set up, and controls
+ * size to their labels instead of spanning the window.
+ */
+@media (min-width: 60rem) {
+  :root {
+    --gutter: 2.5rem;
+  }
+
+  .shell {
+    max-width: 76rem;
+    margin: 0 0 0 var(--sidebar);
+    padding: 0 var(--gutter) 3rem;
+  }
+
+  .nav {
+    inset: 0 auto 0 0;
+    width: var(--sidebar);
+    flex-direction: column;
+    gap: 0.125rem;
+    padding: 1.5rem 0.75rem;
+    border-top: 0;
+    border-right: 1px solid var(--line-soft);
+  }
+
+  .nav-brand {
+    display: block;
+    padding: 0.25rem 0.75rem 1.25rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+
+  .nav-item {
+    flex: none;
+    justify-content: flex-start;
+    min-height: 2.5rem;
+    padding: 0 0.75rem;
+    border-radius: var(--radius);
+    font-size: 0.9375rem;
+  }
+
+  .nav-item:hover {
+    color: var(--ink);
+    background: var(--line-soft);
+  }
+
+  .nav-item[aria-current="page"] {
+    background: var(--line-soft);
+    box-shadow: inset 2px 0 0 var(--ink);
+  }
+
+  .topbar {
+    padding: 2rem 0 1rem;
+  }
+
+  .wordmark {
+    font-size: 1.375rem;
+  }
+
+  /* The board: a wall of status rather than one long scroll. */
+  .rows-board {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
+    column-gap: 2.5rem;
+  }
+
+  /* Actions size to their labels, in one row. */
+  .actions,
+  .actions.actions-pair {
+    display: flex;
+    flex-wrap: wrap;
+  }
+
+  .button {
+    width: fit-content;
+    min-width: 9rem;
+    padding: 0 1.25rem;
+  }
+
+  /* Forms, notes and single controls keep a readable measure. */
+  form,
+  .entry-note,
+  .state-note {
+    max-width: 40rem;
+  }
+
+  /* Lists of links and settings: a row this wide is harder to read, not
+   * easier. The board and the stack page's panes set their own widths. */
+  .shell > .rows:not(.rows-board) {
+    max-width: 48rem;
+  }
+
+  /* The stack page: what is happening, and how it is set up. */
+  .detail {
+    display: grid;
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    gap: 3.5rem;
+    align-items: start;
+  }
+
+  .detail-side {
+    padding-top: 0.5rem;
+  }
+
+  /* A row with a second way in keeps both on one line. */
+  .row:has(> .row-aside) {
+    display: flex;
+    align-items: center;
+  }
+
+  .row:has(> .row-aside) > .row-link {
+    flex: 1;
+  }
+
+  .row-aside {
+    margin: 0 0 0 1rem;
+  }
+
+  /* Logs get the room there is. */
+  .log-tall {
+    max-height: calc(100dvh - 22rem);
+    min-height: 20rem;
+  }
+}
+
+/* ---- charts ------------------------------------------------------------ */
+
+.chart {
+  /* Room for the time labels below the plot. */
+  margin: 0 0 2.25rem;
+}
+
+.chart-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.375rem;
+  font-size: 0.875rem;
+}
+
+.chart-title {
+  color: var(--ink-dim);
+}
+
+.chart-value {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+}
+
+.chart-plot {
+  position: relative;
+  height: 9rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.chart-plot svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: pan-y;
+}
+
+.chart-area {
+  fill: var(--ink);
+  opacity: 0.16;
+}
+
+.chart-peak {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.25;
+  opacity: 0.55;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-limit {
+  stroke: var(--ink-dim);
+  stroke-dasharray: 4 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart[data-state="degraded"] .chart-area {
+  fill: var(--degraded);
+  opacity: 0.35;
+}
+
+.chart[data-state="degraded"] .chart-value {
+  color: var(--degraded);
+}
+
+.chart-axis {
+  position: absolute;
+  font-size: 0.6875rem;
+  color: var(--ink-faint);
+  font-family: var(--mono);
+}
+
+.chart-axis-top { top: 0; left: 0; }
+.chart-axis-start { bottom: -1.25rem; left: 0; }
+.chart-axis-end { bottom: -1.25rem; right: 0; }
+
+.sparkline {
+  width: 6rem;
+  height: 1.5rem;
+}
+
+.sparkline path {
+  fill: none;
+  stroke: var(--ink-dim);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.usage {
+  height: 0.5rem;
+  background: var(--line-soft);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.usage-fill {
+  height: 100%;
+  background: var(--ink-dim);
+}
+
+.usage[data-state="degraded"] .usage-fill { background: var(--degraded); }
+.usage[data-state="unhealthy"] .usage-fill { background: var(--bad); }
+
+.range-picker {
+  display: flex;
+  gap: 0.375rem;
+  margin: 1rem 0 1.5rem;
+  flex-wrap: wrap;
+}
+
+.range-picker .button {
+  width: auto;
+  min-width: 3.5rem;
+  min-height: 2.25rem;
+  padding: 0 0.75rem;
+}
+
+.charts {
+  display: grid;
+  gap: 0 2rem;
+}
+
+@media (min-width: 60rem) {
+  .charts {
+    grid-template-columns: repeat(auto-fill, minmax(22rem, 1fr));
+  }
+}
+
+.row-usage {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.375rem 1rem;
+  padding: 0.75rem 0.25rem;
+}
+
+.row-usage .usage {
+  grid-column: 1 / -1;
+}
+
+/* Live figures under a board row's name. */
+.row-figures {
+  grid-column: 2;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--ink-dim);
+}
+
+/* A board row can have a third line; its bar and count span it, so the
+ * bars still read as one edge down the list. */
+.rows-board .row-bar,
+.rows-board .row-count {
+  grid-row: 1 / span 3;
+}
+
+/* The CPU trend: a desktop has room for it, a phone keeps the numbers. */
+.row-link .sparkline {
+  display: none;
+}
+
+@media (min-width: 60rem) {
+  .rows-board .row-link {
+    grid-template-columns: 4px 1fr auto auto;
+  }
+
+  .rows-board .row-link .sparkline {
+    display: block;
+    grid-row: 1 / span 3;
+    grid-column: 3;
+  }
+
+  .rows-board .row-count {
+    grid-column: 4;
+  }
+}
+
+/* Compose lines to paste: one tap selects them all. */
+.snippet {
+  margin: 0 0 0.5rem;
+  padding: 0.75rem;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  white-space: pre;
+  overflow-x: auto;
+  user-select: all;
+  -webkit-user-select: all;
+}
+
+/* A container's now, typical and peak: its bar spans all three lines. */
+.rows-figures .row-bar {
+  grid-row: 1 / span 4;
+}

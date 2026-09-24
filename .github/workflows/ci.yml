@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege by default.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The required status check on this repository is named `ci`.
+  # It runs `just ci` and nothing else, so CI and local agree by construction.
+  ci:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # This job never pushes. Leaving the token in .git/config would let
+          # any later step, or an uploaded artifact, carry it off.
+          persist-credentials: false
+          # gitleaks scans the whole history, not just this commit.
+          fetch-depth: 0
+
+      # Reads the same mise.toml used locally.
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          install: true
+          cache: true
+
+      - name: just ci
+        run: just ci
+
+  # Every browser test, each against a freshly started server. The hosted
+  # runner has a Docker daemon, which the deploy and shell tests need.
+  e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          install: true
+          cache: true
+
+      # The web build precompresses its assets with it; without it the
+      # performance budget measures on-the-fly compression instead.
+      - name: brotli
+        run: sudo apt-get install -y --no-install-recommends brotli
+
+      - name: browser tests
+        run: just test-e2e

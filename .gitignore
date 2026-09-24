@@ -1,0 +1,37 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Rust
+/target
+**/*.rs.bk
+
+# Leptos / trunk
+/crates/web/dist
+/crates/web/.trunk
+
+# Local state
+/data
+/.dev-data
+*.db
+*.db-shm
+*.db-wal
+
+# Node, used only by the browser smoke test
+/node_modules
+/package-lock.json
+/package.json
+/target/e2e-shots
+
+# Editors / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Specs, plans and design notes are local working files, never committed:
+# README.md and AGENTS.md are the only documents in the repository.
+/docs/superpowers/

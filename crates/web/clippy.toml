@@ -1,0 +1,16 @@
+# Async work goes through crate::screen::Screen, which ties it to the screen
+# that started it. Started any other way, a task that outlives its screen
+# reads disposed signals, Leptos panics, and the whole client stops.
+disallowed-methods = [
+    { path = "leptos::task::spawn_local", reason = "use Screen::load or Screen::act" },
+    { path = "leptos::task::spawn", reason = "use Screen::load or Screen::act" },
+    { path = "reactive_graph::spawn_local_scoped", reason = "use Screen::load" },
+    { path = "reactive_graph::spawn_local_scoped_with_cancellation", reason = "use Screen::load" },
+    { path = "leptos_dom::helpers::set_timeout", reason = "use Screen::after" },
+    { path = "leptos_dom::helpers::request_animation_frame", reason = "use Screen::next_frame" },
+    # Requests go through api::request, which gives each a deadline.
+    { path = "gloo_net::http::Request::get", reason = "use api::request, which sets a timeout" },
+    { path = "gloo_net::http::Request::post", reason = "use api::request, which sets a timeout" },
+    { path = "gloo_net::http::Request::put", reason = "use api::request, which sets a timeout" },
+    { path = "gloo_net::http::Request::delete", reason = "use api::request, which sets a timeout" },
+]
