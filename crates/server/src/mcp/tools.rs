@@ -1038,9 +1038,10 @@ async fn operate(api: &Api, args: &Value, action: &str) -> Result<Value, String>
         }
         tokio::select! {
             () = announced(&mut finished, id) => {}
-            // Read again at once, and let the API refuse. Announced
-            // revocations can be missed ones too, so the wait goes on if
-            // the token still works, re-read every RECHECK as before.
+            // Read again at once, and let the API refuse. Falling behind
+            // the announcements also ends this, as a missed revocation
+            // might have been among them; if the token still works, the
+            // wait goes on, read every RECHECK.
             () = &mut revoked, if watching_revocation => watching_revocation = false,
             () = tokio::time::sleep_until(deadline.min(now + RECHECK)) => {}
         }

@@ -131,17 +131,18 @@ where
         use futures::StreamExt as _;
 
         loop {
-            return match self.0.next().await {
-                Some(Ok(line)) => match serde_json::to_string(&line) {
-                    Ok(json) => Next::Send(Message::Text(json.into())),
-                    Err(_) => continue,
-                },
+            match self.0.next().await {
+                Some(Ok(line)) => {
+                    if let Ok(json) = serde_json::to_string(&line) {
+                        return Next::Send(Message::Text(json.into()));
+                    }
+                }
                 Some(Err(e)) => {
                     tracing::warn!(error = %e, "log stream ended with an error");
-                    Next::End(Some(close(close_code::ERROR, "failed")))
+                    return Next::End(Some(close(close_code::ERROR, "failed")));
                 }
-                None => Next::End(Some(close(close_code::NORMAL, "stopped"))),
-            };
+                None => return Next::End(Some(close(close_code::NORMAL, "stopped"))),
+            }
         }
     }
 }

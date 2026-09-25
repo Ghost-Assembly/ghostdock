@@ -61,7 +61,7 @@ impl Inner {
 }
 
 /// A tick as the event socket sends it: exactly `ServerEvent::Metrics`,
-/// serialised from a borrow rather than a copy of the snapshot.
+/// serialized from a borrow rather than a copy of the snapshot.
 #[derive(serde::Serialize)]
 #[serde(tag = "type", rename = "metrics")]
 struct MetricsEvent<'a> {
@@ -79,7 +79,7 @@ pub struct Sampler {
     /// The latest tick as event JSON, written once and shared by every
     /// socket watching figures. Not on the runner's broadcast: that would
     /// copy the snapshot into every receiver, and each socket would
-    /// serialise it again.
+    /// serialize it again.
     ticks: Arc<watch::Sender<Option<Utf8Bytes>>>,
 }
 
@@ -825,7 +825,7 @@ mod forgetting {
 
     #[test]
     fn a_tick_is_sent_as_the_metrics_event_itself() {
-        // Serialised from a borrow, it must still read as the event the
+        // Serialized from a borrow, it must still read as the event the
         // client parses.
         let s = Sampler::new(None, HostPaths::default());
         let mut ticks = s.ticks();
