@@ -7,7 +7,7 @@ use crate::api;
 use crate::confirm::Confirm;
 use crate::load::Load;
 use crate::screen::Screen;
-use crate::ui::{ErrorNotice, Field, Row};
+use crate::ui::{ErrorNotice, Field, Row, Topbar};
 
 #[component]
 pub fn Accounts() -> impl IntoView {
@@ -23,10 +23,7 @@ pub fn Accounts() -> impl IntoView {
     Effect::new(move |_| refresh());
 
     view! {
-        <header class="topbar">
-            <h1 class="wordmark">"Accounts"</h1>
-            <a class="topbar-link" href="/settings">"Back"</a>
-        </header>
+        <Topbar title="Accounts" back="/settings" />
 
         <ErrorNotice error />
 
@@ -95,12 +92,14 @@ fn AccountRows(
                         );
                     });
                     let you = account.you;
+                    let username = account.username.clone();
                     view! {
-                        <Row state="running" name=account.username detail>
+                        <Row state="none" name=account.username detail>
                             <Show when=move || !you>
                                 <Confirm
                                     label="Remove"
                                     confirm="Remove account"
+                                    subject=username.clone()
                                     row=true
                                     disabled=Signal::derive(move || removing.get())
                                     on_confirm=remove

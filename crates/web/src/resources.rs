@@ -11,20 +11,24 @@ use crate::events::use_events;
 use crate::load::Load;
 use crate::screen::Screen;
 use crate::status::usage;
-use crate::ui::{ErrorNotice, Row};
+use crate::ui::{Choices, ErrorNotice, Row, Topbar, came_from};
 
 #[component]
 pub fn RangePicker(range: RwSignal<Range>) -> impl IntoView {
     view! {
-        <div class="range-picker" role="group" aria-label="Range">
-            {Range::ALL.into_iter().map(|r| view! {
-                <button class="button button-quiet" type="button"
-                    aria-pressed=move || (range.get() == r).to_string()
-                    on:click=move |_| range.set(r)>
-                    {r.as_str()}
-                </button>
-            }).collect_view()}
-        </div>
+        <Choices
+            class="choices range-picker"
+            label="Range"
+            options=Range::ALL.iter().map(|r| (r.as_str(), None)).collect()
+            chosen=Signal::derive(move || {
+                Range::ALL.iter().position(|r| *r == range.get()).unwrap_or_default()
+            })
+            on_choose=Callback::new(move |i: usize| {
+                if let Some(r) = Range::ALL.get(i) {
+                    range.set(*r);
+                }
+            })
+        />
     }
 }
 
@@ -130,8 +134,9 @@ pub fn SizingRows(list: Vec<shared::metrics::Recommendation>) -> impl IntoView {
                 view! {
                     <Row
                         state=sizing_state(&r)
-                        href=format!("/containers/{}/resources", r.container)
+                        href=format!("/containers/{}/resources?from=/host", r.container)
                         name=r.container
+                        ident=true
                         detail
                     />
                 }
@@ -152,7 +157,7 @@ pub fn SizingAdvice(advice: shared::metrics::Recommendation) -> impl IntoView {
         }).collect_view()}
         <p class="entry-note">{advice.evidence.clone()}</p>
         {advice.snippet.clone().map(|snippet| view! {
-            <pre class="snippet">{snippet}</pre>
+            <pre class="snippet" tabindex="0">{snippet}</pre>
             <p class="entry-note">"Tap to select, then paste into the compose file."</p>
         })}
     }
@@ -161,7 +166,12 @@ pub fn SizingAdvice(advice: shared::metrics::Recommendation) -> impl IntoView {
 /// Each of a stack's containers: what it uses now, and typically (the 95th
 /// percentile) and at its peak over the chosen range.
 #[component]
-pub fn ContainerFigureRows(project: Signal<String>, range: RwSignal<Range>) -> impl IntoView {
+pub fn ContainerFigureRows(
+    project: Signal<String>,
+    range: RwSignal<Range>,
+    /// The screen these rows are on, for the way back from one of them.
+    from: Signal<String>,
+) -> impl IntoView {
     let screen = Screen::new();
     let list = RwSignal::new(Load::<Vec<ContainerFigures>>::Loading);
     let now = RwSignal::new(None::<Now>);
@@ -216,12 +226,14 @@ pub fn ContainerFigureRows(project: Signal<String>, range: RwSignal<Range>) -> i
                     let state = Signal::derive(move || {
                         if current.with(Option::is_some) { "running" } else { "stopped" }
                     });
+                    let now_line = Signal::derive(move || current.get().map_or_else(
+                        || "not running".to_owned(),
+                        |r| format!("now {}", pair(r.cpu, r.mem)),
+                    ));
+                    let href = format!("/containers/{}/resources?from={}", f.key, from.get_untracked());
                     view! {
-                        <Row state href=format!("/containers/{}/resources", f.key) name=f.key>
-                            <span class="row-detail">{move || current.get().map_or_else(
-                                || "not running".to_owned(),
-                                |r| format!("now {}", pair(r.cpu, r.mem)),
-                            )}</span>
+                        <Row state href name=f.key ident=true>
+                            <span class="row-detail">{now_line}</span>
                             <span class="row-detail">{typical}</span>
                             <span class="row-detail">{peak}</span>
                         </Row>
@@ -275,10 +287,7 @@ pub fn ContainerResources() -> impl IntoView {
         });
     });
     view! {
-        <header class="topbar">
-            <h1 class="wordmark">{move || name.get()}</h1>
-            <a class="topbar-link" href="/host">"Host"</a>
-        </header>
+        <Topbar title=name back=came_from("/host") />
         <RangePicker range />
         <Charts target range measures=&[Measure::Cpu, Measure::Memory, Measure::NetIn, Measure::NetOut, Measure::DiskRead, Measure::DiskWrite] />
         {move || advice.get().map(|a| view! { <SizingAdvice advice=a /> })}

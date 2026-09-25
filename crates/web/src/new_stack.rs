@@ -6,7 +6,7 @@ use shared::deployment::NewStack;
 
 use crate::api;
 use crate::screen::Screen;
-use crate::ui::{ErrorNotice, Field, route_id};
+use crate::ui::{ErrorNotice, Field, Topbar, route_id};
 
 const PLACEHOLDER: &str = "services:
   web:
@@ -92,10 +92,12 @@ pub fn NewStackForm(#[prop(optional)] editing: bool) -> impl IntoView {
     };
 
     view! {
-        <header class="topbar">
-            <h1 class="wordmark">{if editing { "Edit stack" } else { "New stack" }}</h1>
-            <a class="topbar-link" href="/">"Cancel"</a>
-        </header>
+        <Topbar title=if editing { "Edit stack" } else { "New stack" }>
+            // Editing is left for the stack it edits; a new one, for the board.
+            <a class="topbar-link" href=move || {
+                existing.get().map_or_else(|| "/".to_owned(), |id| format!("/stacks/{id}"))
+            }>"Cancel"</a>
+        </Topbar>
 
         <form on:submit=submit>
             <ErrorNotice error />

@@ -7,7 +7,7 @@
 
 use leptos::html::Pre;
 use leptos::prelude::*;
-use leptos_router::hooks::use_params_map;
+use leptos_router::hooks::{use_params_map, use_query_map};
 
 /// The numeric `:id` of the current route, following it as the route moves.
 /// Zero, which names no record, when it is missing or not a number: the
@@ -20,6 +20,101 @@ pub fn route_id() -> Memo<i64> {
             .with(|p| p.get("id").and_then(|v| v.parse::<i64>().ok()))
             .unwrap_or_default()
     })
+}
+
+/// Where Back leads: the screen named by the `from` query, when a link
+/// said where it came from, or else `default`.
+///
+/// Only a plain path within this app is followed. Anything else, such as
+/// another site or a script, is ignored rather than trusted, since anyone
+/// can write a link with any query.
+#[must_use]
+pub fn came_from(default: &'static str) -> Memo<String> {
+    let query = use_query_map();
+    Memo::new(move |_| {
+        query
+            .with(|q| q.get("from").filter(|path| is_local_path(path)))
+            .unwrap_or_else(|| default.to_owned())
+    })
+}
+
+/// A path on this site and nothing more: `/stacks/3`, never `//elsewhere`
+/// or `javascript:`.
+fn is_local_path(path: &str) -> bool {
+    path.starts_with('/')
+        && !path.starts_with("//")
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.'))
+        && !path.contains("..")
+}
+
+/// One of the icons in `icons/lucide.svg`, drawn in the color of
+/// the text around it. Hidden from assistive technology: it always sits
+/// beside words that say the same thing.
+#[component]
+pub fn Icon(name: &'static str) -> impl IntoView {
+    view! {
+        <svg class="icon" aria-hidden="true" focusable="false">
+            <use href=format!("/icons/lucide.svg#i-{name}") />
+        </svg>
+    }
+}
+
+/// The top of a screen: its name, and the way back to the screen before
+/// or the one thing to do from here.
+///
+/// One component rather than the markup on every screen: every screen's
+/// view then holds the same type here, and the compiler writes its code
+/// once rather than once per screen.
+#[component]
+pub fn Topbar(
+    #[prop(into)] title: Signal<String>,
+    /// Where Back leads; no Back without it.
+    #[prop(optional, into)]
+    back: Option<Signal<String>>,
+    /// Anything else at the end of the bar, such as a link to add something.
+    #[prop(optional)]
+    children: Option<Children>,
+) -> impl IntoView {
+    view! {
+        <header class="topbar">
+            <h1 class="wordmark">{title}</h1>
+            {back.map(|href| view! {
+                <a class="topbar-link" href=href>
+                    <Icon name="chevron-left" />
+                    "Back"
+                </a>
+            })}
+            {children.map(|children| children())}
+        </header>
+    }
+}
+
+/// A set of choices, one of them on: a row of buttons, the chosen one
+/// pressed. By position, so every set of choices shares this one piece of
+/// code whatever it chooses between.
+#[component]
+pub fn Choices(
+    class: &'static str,
+    label: &'static str,
+    /// Each choice's words, and its icon if it has one.
+    options: Vec<(&'static str, Option<&'static str>)>,
+    #[prop(into)] chosen: Signal<usize>,
+    on_choose: Callback<usize>,
+) -> impl IntoView {
+    view! {
+        <div class=class role="group" aria-label=label>
+            {options.into_iter().enumerate().map(|(i, (words, icon))| view! {
+                <button class="button button-quiet" type="button"
+                    aria-pressed=move || (chosen.get() == i).to_string()
+                    on:click=move |_| on_choose.run(i)>
+                    {icon.map(|name| view! { <Icon name /> })}
+                    {words}
+                </button>
+            }).collect_view()}
+        </div>
+    }
 }
 
 /// Something that went wrong, said where it happened. Nothing at all while
@@ -44,7 +139,14 @@ pub fn Field(label: &'static str, children: Children) -> impl IntoView {
     }
 }
 
-/// One row of a list: a coloured bar, a name, and what else it says.
+/// A secondary way in from a row: where, what it is called, and its icon.
+pub type Aside = (String, &'static str, &'static str);
+
+/// One row of a list: a bar, a name, and what else it says.
+///
+/// The bar's shape and color, and the icon the stylesheet puts before the
+/// detail, give the row's state; a row with no state to give (`none`)
+/// gets a plain, neutral bar, so color is never spent on decoration.
 ///
 /// With an `href` the row is a link; without one it looks the same but
 /// leads nowhere, which is how a row says there is nothing to open. The
@@ -54,22 +156,29 @@ pub fn Field(label: &'static str, children: Children) -> impl IntoView {
 pub fn Row(
     #[prop(into)] state: Signal<&'static str>,
     #[prop(into)] name: String,
+    /// The name is an identifier (a container, a key, a path) rather than
+    /// words, and is set in monospace.
+    #[prop(optional)]
+    ident: bool,
     /// Read once: a row does not change between link and not.
     #[prop(optional, into)]
     href: MaybeProp<String>,
     #[prop(optional, into)] detail: Option<String>,
     #[prop(optional, into)] count: Option<String>,
-    /// Secondary ways in, beside the row: where, and what it is called.
-    #[prop(optional)]
-    asides: Vec<(String, &'static str)>,
+    #[prop(optional)] count_icon: Option<&'static str>,
+    #[prop(optional)] asides: Vec<Aside>,
     #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView {
     let inner = view! {
-        <span class="row-bar" data-state=move || state.get()></span>
-        <span class="row-name">{name}</span>
-        {detail.map(|detail| view! { <span class="row-detail">{detail}</span> })}
+        <span class="row-bar" data-state=state></span>
+        <span class=if ident { "row-name row-id" } else { "row-name" }>{name}</span>
+        {detail.map(|detail| view! {
+            <span class="row-detail">{detail}</span>
+        })}
         {children.map(|children| children())}
-        {count.map(|count| view! { <span class="row-count">{count}</span> })}
+        {count.map(|count| view! {
+            <span class="row-count">{count_icon.map(|name| view! { <Icon name /> })}{count}</span>
+        })}
     };
     let body = match href.get_untracked() {
         Some(href) => view! { <a class="row-link" href=href>{inner}</a> }.into_any(),
@@ -80,7 +189,9 @@ pub fn Row(
             {body}
             {asides
                 .into_iter()
-                .map(|(href, label)| view! { <a class="row-aside" href=href>{label}</a> })
+                .map(|(href, label, icon)| view! {
+                    <a class="row-aside" href=href><Icon name=icon />{label}</a>
+                })
                 .collect_view()}
         </li>
     }
@@ -105,7 +216,9 @@ pub fn to_bottom(pane: NodeRef<Pre>) {
     }
 }
 
-/// One line of output in a log pane, stderr marked as such.
+/// One line of output in a log pane. A line from stderr is marked by a rule
+/// beside it, not by color: it is a stream, not a fault, and plenty of
+/// programs write their ordinary progress there.
 #[component]
 pub fn OutputLine(#[prop(into)] text: String, #[prop(optional)] stderr: bool) -> impl IntoView {
     let class = if stderr {
@@ -140,5 +253,24 @@ mod tests {
         assert_eq!(list, ["b", "c"]);
         toggle(&mut list, "a");
         assert_eq!(list, ["b", "c", "a"]);
+    }
+
+    #[test]
+    fn back_follows_only_paths_on_this_site() {
+        for ok in ["/", "/stacks/3", "/host", "/containers/web-1/resources"] {
+            assert!(is_local_path(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "stacks/3",
+            "//elsewhere.example",
+            "/\\elsewhere",
+            "javascript:alert(1)",
+            "/stacks/3?x=<",
+            "/../settings",
+            "https://elsewhere.example/",
+        ] {
+            assert!(!is_local_path(bad), "{bad}");
+        }
     }
 }

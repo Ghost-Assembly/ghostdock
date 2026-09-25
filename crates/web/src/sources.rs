@@ -11,7 +11,7 @@ use crate::api;
 use crate::confirm::Confirm;
 use crate::load::Load;
 use crate::screen::Screen;
-use crate::ui::{ErrorNotice, Field, Row};
+use crate::ui::{ErrorNotice, Field, Row, Topbar};
 
 #[component]
 pub fn Sources() -> impl IntoView {
@@ -33,10 +33,7 @@ pub fn Sources() -> impl IntoView {
     Effect::new(move |_| refresh());
 
     view! {
-        <header class="topbar">
-            <h1 class="wordmark">"Sources"</h1>
-            <a class="topbar-link" href="/settings">"Back"</a>
-        </header>
+        <Topbar title="Sources" back="/settings" />
 
         <ErrorNotice error />
 
@@ -99,9 +96,10 @@ fn RepoRows(repos: Vec<Repo>) -> impl IntoView {
                         .map_or_else(|| "No credential".to_owned(), |name| format!("Using {name}"));
                     view! {
                         <Row
-                            state="running"
+                            state="none"
                             href=format!("/repos/{}/discover", repo.id)
                             name=repo.url
+                            ident=true
                             detail
                             count="Find stacks"
                         />
@@ -145,10 +143,11 @@ fn CredentialRows(
                         );
                     });
                     view! {
-                        <Row state="running" name=credential.name detail=credential.username>
+                        <Row state="none" name=credential.name.clone() detail=credential.username>
                             <Confirm
                                 label="Remove"
                                 confirm="Remove it"
+                                subject=credential.name
                                 row=true
                                 disabled=Signal::derive(move || removing.get())
                                 on_confirm=remove

@@ -1,4 +1,4 @@
-//! How a state reads on screen: the key the stylesheet colours by, and the
+//! How a state reads on screen: the key the stylesheet draws it by, and the
 //! words beside it. Kept in one place so two screens describing the same
 //! thing cannot drift into saying it differently.
 
@@ -25,9 +25,11 @@ impl Outcome {
                 tone: "quiet",
                 word: "succeeded".to_owned(),
             },
+            // In progress is not a state of health, good or bad, so it is
+            // not colored as one.
             DeploymentStatus::Running => Self {
-                state: "degraded",
-                tone: "degraded",
+                state: "busy",
+                tone: "busy",
                 word: "running now".to_owned(),
             },
             DeploymentStatus::Failed => Self {
@@ -90,7 +92,7 @@ mod tests {
         assert_eq!(ok.heading(), "Succeeded");
 
         let running = Outcome::of(&deployment(DeploymentStatus::Running, None));
-        assert_eq!((running.state, running.tone), ("degraded", "degraded"));
+        assert_eq!((running.state, running.tone), ("busy", "busy"));
         assert_eq!(running.heading(), "Running now");
 
         let failed = Outcome::of(&deployment(DeploymentStatus::Failed, Some(3)));

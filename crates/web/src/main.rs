@@ -46,6 +46,7 @@ mod sources;
 mod stack;
 mod stacks;
 mod status;
+mod theme;
 mod time;
 mod tokens;
 mod ui;
@@ -54,6 +55,13 @@ mod updates;
 fn main() {
     set_panic_hook();
     keep_selections();
+    // index.html says the app is loading until the app can say so itself.
+    if let Some(boot) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id("boot"))
+    {
+        boot.remove();
+    }
     leptos::mount::mount_to_body(app::App);
 }
 

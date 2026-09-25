@@ -18,7 +18,7 @@ use crate::api;
 use crate::confirm::Confirm;
 use crate::load::Load;
 use crate::screen::Screen;
-use crate::ui::{ErrorNotice, Row};
+use crate::ui::{ErrorNotice, Row, Topbar};
 
 #[component]
 pub fn Cleanup() -> impl IntoView {
@@ -65,10 +65,7 @@ pub fn Cleanup() -> impl IntoView {
     };
 
     view! {
-        <header class="topbar">
-            <h1 class="wordmark">"Cleanup"</h1>
-            <a class="topbar-link" href="/settings">"Back"</a>
-        </header>
+        <Topbar title="Cleanup" back="/settings" />
 
         <ErrorNotice error />
 
@@ -233,7 +230,7 @@ fn ContainerRows(containers: Vec<StoppedContainer>) -> impl IntoView {
             {containers
                 .into_iter()
                 .map(|c| view! {
-                    <Row state="stopped" name=c.name detail=format!("{}, {}", c.image, c.status) />
+                    <Row state="stopped" name=c.name ident=true detail=format!("{}, {}", c.image, c.status) />
                 })
                 .collect_view()}
         </ul>
@@ -247,7 +244,7 @@ fn ImageRows(images: Vec<UnusedImage>) -> impl IntoView {
             {images
                 .into_iter()
                 .map(|image| view! {
-                    <Row state="stopped" name=image.label() count=format_bytes(image.size_bytes) />
+                    <Row state="none" name=image.label() ident=true count=format_bytes(image.size_bytes) />
                 })
                 .collect_view()}
         </ul>

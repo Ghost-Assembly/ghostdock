@@ -7,7 +7,7 @@ use crate::api;
 use crate::confirm::Confirm;
 use crate::load::Load;
 use crate::screen::Screen;
-use crate::ui::{ErrorNotice, Field, Row, toggle};
+use crate::ui::{ErrorNotice, Field, Icon, Row, Topbar, toggle};
 
 #[component]
 pub fn Tokens() -> impl IntoView {
@@ -24,10 +24,7 @@ pub fn Tokens() -> impl IntoView {
     Effect::new(move |_| refresh());
 
     view! {
-        <header class="topbar">
-            <h1 class="wordmark">"API tokens"</h1>
-            <a class="topbar-link" href="/settings">"Back"</a>
-        </header>
+        <Topbar title="API tokens" back="/settings" />
 
         <ErrorNotice error />
 
@@ -42,13 +39,15 @@ pub fn Tokens() -> impl IntoView {
             );
             view! {
             <h2 class="group-heading">{format!("New token: {name}")}</h2>
-            <pre class="secret">{secret}</pre>
+            <pre class="secret">{secret.clone()}</pre>
+            <CopyButton text=secret what="token" />
             <p class="entry-note">
                 "Copy it now. GhostDock keeps only a fingerprint and cannot show it again. \
                  Send it as the header Authorization: Bearer followed by the token."
             </p>
             <h2 class="group-heading">"Use it from Claude Code"</h2>
-            <pre class="secret">{claude}</pre>
+            <pre class="secret">{claude.clone()}</pre>
+            <CopyButton text=claude what="command" />
             <p class="entry-note">
                 "GhostDock's MCP server offers Claude the tools this token's permissions allow, \
                  and nothing else."
@@ -84,6 +83,47 @@ pub fn Tokens() -> impl IntoView {
             revealed.set(Some((name, secret)));
             refresh();
         } />
+    }
+}
+
+/// Copies `text` to the clipboard, and says whether it did.
+///
+/// Browsers offer the clipboard only over HTTPS or on localhost. Elsewhere
+/// the button says so; the text above it selects in one tap, so the
+/// phone's own copy still works.
+#[component]
+fn CopyButton(text: String, what: &'static str) -> impl IntoView {
+    let screen = Screen::new();
+    let said = RwSignal::new(None::<&'static str>);
+    let text = StoredValue::new(text);
+    let copy = move |_| {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        if !window.is_secure_context() {
+            said.set(Some(
+                "This browser copies only over HTTPS. Tap the text to select it, then copy.",
+            ));
+            return;
+        }
+        let promise = window.navigator().clipboard().write_text(&text.get_value());
+        screen.act(
+            wasm_bindgen_futures::JsFuture::from(promise),
+            move |result| {
+                said.set(Some(if result.is_ok() {
+                    "Copied."
+                } else {
+                    "Could not copy. Tap the text to select it, then copy."
+                }));
+            },
+        );
+    };
+    view! {
+        <button class="button button-quiet" type="button" on:click=copy>
+            <Icon name="copy" />
+            {format!("Copy {what}")}
+        </button>
+        <p class="entry-note" role="status">{move || said.get()}</p>
     }
 }
 
@@ -133,13 +173,14 @@ fn TokenRows(
                     });
                     view! {
                         <Row
-                            state="running"
+                            state="none"
                             name=format!("{} ({}…)", token.name, token.prefix)
                             detail=format!("{granted}; {used}; {expiry}")
                         >
                             <Confirm
                                 label="Revoke"
                                 confirm="Revoke it"
+                                subject=token.name
                                 row=true
                                 disabled=Signal::derive(move || revoking.get())
                                 on_confirm=revoke

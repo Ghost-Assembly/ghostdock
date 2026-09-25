@@ -20,6 +20,9 @@ gloo-net = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 wasm-bindgen = { workspace = true }
+# Awaits the clipboard's promise. From the wasm-bindgen project, and already
+# in the tree through gloo-net.
+wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
     "console",
     "Event",
@@ -39,4 +42,8 @@ web-sys = { workspace = true, features = [
     "DomRect",
     "Selection",
     "Node",
+    "KeyboardEvent",
+    "FocusEvent",
+    "Navigator",
+    "Clipboard",
 ] }

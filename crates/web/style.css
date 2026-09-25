@@ -1,32 +1,74 @@
 /* GhostDock — an operator's status board.
  *
  * One rule governs colour: colour means state. Chrome is achromatic, and the
- * only saturated values in the interface are the four state colours below.
+ * only saturated values in the interface are the state colors below.
  * Nothing decorative is ever coloured, so a spot of colour always means
- * something needs reading.
+ * something needs reading. And no state is shown by color alone: each also
+ * has a shape (its bar) and an icon, and nearly always a word.
+ *
+ * Contrast, WCAG 2 AA, against --ground / --raised in each theme. Text
+ * tokens pass 4.5:1 on both; borders and state marks pass 3:1.
+ *
+ *                 dark          light
+ *   --ink-dim     5.97 / 5.40   5.31 / 5.85
+ *   --ink-faint   5.39 / 4.88   4.92 / 5.43
+ *   --bad         5.84 / 5.28   5.14 / 5.66
+ *   --degraded    7.42 / 6.71   5.46 / 6.02
+ *   --run         5.26 / 4.76   4.51 / 4.97
+ *   --off         4.80 / 4.34   4.18 / 4.60
+ *   --line-strong 3.63 / 3.28   3.26 / 3.59
+ *   near-limit chart fill, against --ground: 3.49 dark, 3.64 light
  */
 
 :root {
+  color-scheme: dark;
   --ground: #171b21;
   --raised: #1e242c;
   --line: #2c3542;
   --line-soft: #232a33;
+  /* The edge a control is found by. */
+  --line-strong: #687483;
   --ink: #e4e8ee;
   --ink-dim: #8d99a8;
-  --ink-faint: #646f7e;
+  --ink-faint: #8591a0;
 
   /* State. The only saturated colours in the product. */
   --run: #3f9e7c;
   --degraded: #d2a24c;
-  --bad: #d0564e;
-  /* Stopped is grey on purpose: stopping a stack is a decision, not a fault,
-   * and colouring it red would cry wolf on every intentional shutdown. */
+  --bad: #e8736a;
+  /* Stopped is gray on purpose: stopping a stack is a decision, not a fault,
+   * and coloring it red would cry wolf on every intentional shutdown. */
   --off: #7c8899;
+  /* Working on it is not a state of health, good or bad. */
+  --busy: var(--ink-dim);
+
+  /* How strongly a chart's area is filled: quietly for a figure, and at
+   * 3:1 against the ground where the fill is the warning. */
+  --fill-area: 0.16;
+  --fill-peak: 0.55;
+  --fill-alert: 0.6;
 
   --gutter: 1rem;
   --radius: 6px;
   --nav-height: 3.5rem;
   --sidebar: 13.5rem;
+  /* A full-size control, and the smallest a thumb reliably hits (44px). */
+  --control: 2.875rem;
+  --control-small: 2.75rem;
+  /* A row's state bar, and the room kept for the widest one. */
+  --bar: 4px;
+  --bar-slot: 6px;
+  --disabled: 0.55;
+
+  --text-2xs: 0.6875rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-md: 0.875rem;
+  --text-base: 0.9375rem;
+  --text-lg: 1rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 1.5rem;
+  --text-hero: clamp(1.5rem, 6vw, 2rem);
 
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
     sans-serif;
@@ -34,20 +76,43 @@
     "Liberation Mono", monospace;
 }
 
+/* Light follows the device unless this device chose Dark; or it was chosen.
+ * The two blocks hold the same values: a media query cannot be combined
+ * with an attribute selector into one rule. */
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
     --ground: #f2f4f7;
     --raised: #ffffff;
     --line: #dce1e8;
     --line-soft: #e8ecf1;
+    --line-strong: #7d8898;
     --ink: #1a1f26;
     --ink-dim: #5a6675;
-    --ink-faint: #8a95a3;
+    --ink-faint: #5f6b7a;
     --run: #2f7d60;
-    --degraded: #8f6c22;
+    --degraded: #7d5e1c;
     --bad: #b2413a;
     --off: #6b7686;
+    --fill-alert: 0.8;
   }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --ground: #f2f4f7;
+  --raised: #ffffff;
+  --line: #dce1e8;
+  --line-soft: #e8ecf1;
+  --line-strong: #7d8898;
+  --ink: #1a1f26;
+  --ink-dim: #5a6675;
+  --ink-faint: #5f6b7a;
+  --run: #2f7d60;
+  --degraded: #7d5e1c;
+  --bad: #b2413a;
+  --off: #6b7686;
+  --fill-alert: 0.8;
 }
 
 *,
@@ -65,7 +130,7 @@ body {
   background: var(--ground);
   color: var(--ink);
   font-family: var(--sans);
-  font-size: 1rem;
+  font-size: var(--text-lg);
   line-height: 1.5;
   /* This screen is mostly figures — 2/2, 18080:80, uptimes. Tabular numerals
    * keep them aligned down a column so the eye can scan rather than read. */
@@ -84,73 +149,106 @@ body {
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
 }
 
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+/* Read out, not shown. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.icon {
+  flex: none;
+  width: 1.125em;
+  height: 1.125em;
+  vertical-align: -0.2em;
+}
+
+/* What index.html shows until the app has started. */
+.boot {
+  margin: 0;
+  padding: calc(2.5rem + env(safe-area-inset-top, 0px)) var(--gutter);
+  color: var(--ink-dim);
+}
+
+/* One reset for everything that is pressed: each kind then says only how
+ * it differs. Zero specificity, so any rule below wins. */
+:where(.button, .row-action, .topbar-link, .nav-item, .row-aside) {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+:where(.button, .row-action, .topbar-link):disabled {
+  opacity: var(--disabled);
+  cursor: default;
+}
+
 /* ---- shell ------------------------------------------------------------ */
 
+/* The page sits clear of a phone's notch and home indicator, and the last
+ * row clear of the bottom navigation, which itself sits above the
+ * indicator. */
 .shell {
   max-width: 44rem;
   margin: 0 auto;
-  padding: 0 var(--gutter) calc(var(--nav-height) + 2rem);
+  padding: 0 max(var(--gutter), env(safe-area-inset-right, 0px))
+    calc(var(--nav-height) + env(safe-area-inset-bottom, 0px) + 2rem)
+    max(var(--gutter), env(safe-area-inset-left, 0px));
 }
 
+/* Stays in reach at the top of a long screen, below the status bar of an
+ * installed app, which draws over the page. */
 .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding: 1rem 0 0.75rem;
+  padding: calc(0.625rem + env(safe-area-inset-top, 0px)) 0 0.375rem;
+  background: var(--ground);
   border-bottom: 1px solid var(--line-soft);
 }
 
 .wordmark {
-  font-size: 0.9375rem;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--text-base);
   font-weight: 600;
   letter-spacing: 0.01em;
-  margin: 0;
+  overflow-wrap: anywhere;
 }
 
-.host-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  font-size: 0.8125rem;
-  color: var(--ink-dim);
-  font-family: var(--mono);
-}
-
-.host-tag::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--run);
-}
-
-.host-tag[data-reachable="false"]::before {
-  background: var(--bad);
-}
-
-/* Navigation in the topbar. Deliberately not `.host-tag`: that carries the
- * reachability dot, and a green dot beside "Back" states something untrue. */
+/* Navigation in the topbar: Back, and the screen's one extra action. */
 .topbar-link {
-  font-size: 0.875rem;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 0.25rem;
+  min-height: var(--control-small);
+  font-size: var(--text-md);
   color: var(--ink-dim);
-  text-decoration: none;
-  padding: 0.25rem 0;
-  /* Also used on a <button>, which otherwise arrives with the browser's own
-   * grey chrome and reads as a different kind of control from its neighbours. */
-  background: none;
-  border: 0;
-  font-family: inherit;
-  cursor: pointer;
-}
-
-.topbar-link:disabled {
-  opacity: 0.55;
-  cursor: default;
 }
 
 .topbar-link:hover,
@@ -162,7 +260,7 @@ body {
  * screen is still what was true a moment ago. */
 .live-paused {
   margin: 0.5rem 0 0;
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   color: var(--ink-dim);
 }
 
@@ -176,7 +274,7 @@ body {
 
 .verdict-line {
   margin: 0;
-  font-size: clamp(1.5rem, 6vw, 2rem);
+  font-size: var(--text-hero);
   font-weight: 500;
   line-height: 1.15;
   letter-spacing: -0.02em;
@@ -193,14 +291,14 @@ body {
 .verdict-count {
   margin: 0.5rem 0 0;
   color: var(--ink-dim);
-  font-size: 0.9375rem;
+  font-size: var(--text-base);
 }
 
 /* ---- groups and rows -------------------------------------------------- */
 
 .group-heading {
   margin: 1.5rem 0 0.5rem;
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--ink-dim);
 }
@@ -222,20 +320,52 @@ body {
   /* A drag across a row selects its text rather than dragging the link. */
   -webkit-user-drag: none;
   display: grid;
-  grid-template-columns: 4px 1fr auto;
+  grid-template-columns: var(--bar-slot) minmax(0, 1fr) auto;
   align-items: center;
   gap: 0 0.875rem;
   min-height: 3.25rem;
   padding: 0.625rem 0.25rem;
   color: inherit;
   text-decoration: none;
-  background: none;
-  border: 0;
-  width: 100%;
-  text-align: left;
-  font: inherit;
-  cursor: pointer;
 }
+
+.row-name {
+  font-size: var(--text-base);
+  overflow-wrap: anywhere;
+}
+
+/* A name that is an identifier: a container, a key, a path. Words stay in
+ * the page's own face. */
+.row-id {
+  font-family: var(--mono);
+}
+
+.row-detail {
+  grid-column: 2;
+  color: var(--ink-dim);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.row-count {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  grid-row: 1 / span 2;
+  grid-column: 3;
+  color: var(--ink-dim);
+  font-size: var(--text-md);
+  font-family: var(--mono);
+}
+
+/* ---- states ----------------------------------------------------------- *
+ *
+ * Each state has a color, a bar shape and an icon, so it reads without
+ * the color: solid and a check for running, hollow and a pause for
+ * stopped, broken and a warning for degraded, thick and a cross for
+ * unhealthy, moving stripes and a spinner for busy. A row with no state
+ * gets a plain bar in the color of a rule.
+ */
 
 .row-bar {
   /* Spans both text lines. If it only covered the name, the bars would not
@@ -243,38 +373,104 @@ body {
    * the point of the whole device -- would not work. */
   grid-row: 1 / span 2;
   align-self: stretch;
+  justify-self: start;
+  width: var(--bar);
   border-radius: 2px;
-  background: var(--off);
+  background: var(--line);
 }
 
 .row-bar[data-state="running"] {
   background: var(--run);
 }
-.row-bar[data-state="degraded"] {
-  background: var(--degraded);
+
+.row-bar[data-state="stopped"] {
+  background: none;
+  border: 1px solid var(--off);
 }
+
+.row-bar[data-state="degraded"] {
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--degraded) 0 6px,
+    transparent 6px 9px
+  );
+}
+
 .row-bar[data-state="unhealthy"] {
+  width: var(--bar-slot);
   background: var(--bad);
 }
 
-.row-name {
-  font-family: var(--mono);
-  font-size: 0.9375rem;
-  overflow-wrap: anywhere;
+.row-bar[data-state="busy"] {
+  width: var(--bar-slot);
+  background: linear-gradient(
+      45deg,
+      var(--busy) 25%,
+      transparent 25% 50%,
+      var(--busy) 50% 75%,
+      transparent 75%
+    )
+    0 0 / 6px 6px;
+  animation: busy-bar 0.8s linear infinite;
 }
 
-.row-detail {
-  grid-column: 2;
-  color: var(--ink-dim);
-  font-size: 0.8125rem;
+@keyframes busy-bar {
+  to {
+    background-position: 0 6px;
+  }
 }
 
-.row-count {
-  grid-row: 1 / span 2;
-  grid-column: 3;
-  color: var(--ink-dim);
-  font-size: 0.875rem;
-  font-family: var(--mono);
+/* The icon before a row's words, and before a disk's: drawn here rather
+ * than by the app, so a list of rows costs no code for it. Lucide icons
+ * (see index.html), as masks filled with the state's color. */
+.row-bar + .row-name + .row-detail::before,
+.state-mark::before {
+  content: "";
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.3rem;
+  vertical-align: -0.15em;
+  background: var(--mark-ink, var(--off));
+  -webkit-mask: var(--mark) center / contain no-repeat;
+  mask: var(--mark) center / contain no-repeat;
+}
+
+.row-bar[data-state="none"] + .row-name + .row-detail::before {
+  display: none;
+}
+
+.row-bar[data-state="running"] + .row-name + .row-detail,
+.state-mark[data-state="running"] {
+  --mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+  --mark-ink: var(--run);
+}
+
+.row-bar[data-state="stopped"] + .row-name + .row-detail,
+.state-mark[data-state="stopped"] {
+  --mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='14' y='3' width='5' height='18' rx='1'/%3E%3Crect x='5' y='3' width='5' height='18' rx='1'/%3E%3C/svg%3E");
+}
+
+.row-bar[data-state="degraded"] + .row-name + .row-detail,
+.state-mark[data-state="degraded"] {
+  --mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3'/%3E%3Cpath d='M12 9v4'/%3E%3Cpath d='M12 17h.01'/%3E%3C/svg%3E");
+  --mark-ink: var(--degraded);
+}
+
+.row-bar[data-state="unhealthy"] + .row-name + .row-detail,
+.state-mark[data-state="unhealthy"] {
+  --mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 6 6 18'/%3E%3Cpath d='m6 6 12 12'/%3E%3C/svg%3E");
+  --mark-ink: var(--bad);
+}
+
+.row-bar[data-state="busy"] + .row-name + .row-detail,
+.state-mark[data-state="busy"] {
+  --mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12a9 9 0 1 1-6.219-8.56'/%3E%3C/svg%3E");
+  --mark-ink: var(--busy);
+}
+
+.row-bar[data-state="busy"] + .row-name + .row-detail::before {
+  animation: spin 1s linear infinite;
 }
 
 /* ---- bottom navigation ------------------------------------------------ */
@@ -284,35 +480,35 @@ body {
 .nav {
   position: fixed;
   inset: auto 0 0 0;
+  z-index: 10;
   display: flex;
   background: var(--raised);
   border-top: 1px solid var(--line);
-  padding-bottom: env(safe-area-inset-bottom, 0);
+  padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px)
+    env(safe-area-inset-left, 0px);
 }
 
 .nav-item {
   flex: 1;
-  min-height: var(--nav-height);
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 0.125rem;
+  min-height: var(--nav-height);
   color: var(--ink-dim);
-  text-decoration: none;
-  font-size: 0.875rem;
-  background: none;
-  border: 0;
-  font-family: inherit;
-  cursor: pointer;
+  font-size: var(--text-xs);
 }
 
+.nav-item .icon {
+  width: 1.375rem;
+  height: 1.375rem;
+}
+
+/* The current section: brighter, and marked by a rule, not only by tone. */
 .nav-item[aria-current="page"] {
   color: var(--ink);
   box-shadow: inset 0 2px 0 var(--ink);
-}
-
-/* A second destructive action after the first one's explanation. */
-.entry-note + .button-danger {
-  margin-top: 1rem;
 }
 
 /* The wordmark belongs to the sidebar; on a phone each screen names itself. */
@@ -328,7 +524,8 @@ body {
   min-height: 100dvh;
   max-width: 24rem;
   margin: 0 auto;
-  padding: 1rem var(--gutter) 2rem;
+  padding: calc(1rem + env(safe-area-inset-top, 0px)) var(--gutter)
+    calc(2rem + env(safe-area-inset-bottom, 0px));
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
@@ -337,7 +534,7 @@ body {
 
 .entry-heading {
   margin: 0 0 0.375rem;
-  font-size: 1.5rem;
+  font-size: var(--text-2xl);
   font-weight: 500;
   letter-spacing: -0.015em;
 }
@@ -345,7 +542,23 @@ body {
 .entry-note {
   margin: 0;
   color: var(--ink-dim);
-  font-size: 0.9375rem;
+  font-size: var(--text-base);
+}
+
+.entry-note a {
+  color: var(--ink);
+}
+
+/* A note that is an identifier, such as a repository's address. */
+.entry-id {
+  font-family: var(--mono);
+  font-size: var(--text-md);
+  overflow-wrap: anywhere;
+}
+
+/* A note directly under the topbar would otherwise sit on its rule. */
+.topbar + .entry-note {
+  margin-top: 0.875rem;
 }
 
 .field {
@@ -356,16 +569,16 @@ body {
 .field-label {
   display: block;
   margin-bottom: 0.375rem;
-  font-size: 0.875rem;
+  font-size: var(--text-md);
   color: var(--ink-dim);
 }
 
 .field-input {
   width: 100%;
-  min-height: 2.875rem;
+  min-height: var(--control);
   padding: 0 0.75rem;
   background: var(--raised);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   color: var(--ink);
   font: inherit;
@@ -376,21 +589,35 @@ body {
   outline-offset: -1px;
 }
 
-.button {
-  width: 100%;
-  min-height: 2.875rem;
-  border: 1px solid var(--ink);
-  border-radius: var(--radius);
-  background: var(--ink);
-  color: var(--ground);
-  font: inherit;
-  font-weight: 500;
-  cursor: pointer;
+/* Single-line monospace input: refs and paths are identifiers, not prose.
+ * 16px on a phone, where anything smaller makes iOS zoom the page. */
+.field-mono {
+  font-family: var(--mono);
+  font-size: var(--text-lg);
 }
 
-.button:disabled {
-  opacity: 0.55;
-  cursor: default;
+select.field-input {
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink-dim) 50%),
+    linear-gradient(135deg, var(--ink-dim) 50%, transparent 50%);
+  background-position: right 1rem center, right 0.7rem center;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 2rem;
+}
+
+.field-code {
+  font-family: var(--mono);
+  font-size: var(--text-lg);
+  line-height: 1.5;
+  padding: 0.625rem 0.75rem;
+  min-height: 12rem;
+  resize: vertical;
+  /* A compose file is indentation-sensitive, so wrapping it would misrepresent
+   * what the user typed. */
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
 }
 
 .notice {
@@ -399,21 +626,47 @@ body {
   border-left: 3px solid var(--bad);
   background: var(--raised);
   border-radius: 0 var(--radius) var(--radius) 0;
-  font-size: 0.875rem;
+  font-size: var(--text-md);
+  overflow-wrap: anywhere;
 }
 
-/* ---- empty and loading ------------------------------------------------ */
+/* ---- buttons ---------------------------------------------------------- */
 
-.state-note {
-  padding: 2.5rem 0;
-  color: var(--ink-dim);
+.button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  width: 100%;
+  min-height: var(--control);
+  padding: 0 1rem;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--ink);
+  color: var(--ground);
+  font-weight: 500;
+  text-align: center;
 }
 
-.state-note p {
-  margin: 0 0 0.5rem;
+.button-quiet {
+  background: none;
+  border-color: var(--line-strong);
+  color: var(--ink);
 }
 
-/* ---- stack actions ---------------------------------------------------- */
+/* A toggle that is on reads as the filled button: the difference between
+ * following and not must be visible without reading the label. */
+.button-quiet[aria-pressed="true"] {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--ground);
+}
+
+.button-danger {
+  background: none;
+  border-color: var(--bad);
+  color: var(--bad);
+}
 
 /* Deploy gets the full width and the solid fill; the other two are quieter,
  * because reaching for Stop by accident on a phone is easy and expensive. */
@@ -434,23 +687,50 @@ body {
   grid-column: auto;
 }
 
-.button-quiet {
-  background: none;
-  border-color: var(--line);
-  color: var(--ink);
+/* A destructive action, and once armed its way out beside it. */
+.confirm {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.625rem;
 }
 
-.button-danger {
-  background: none;
-  border-color: var(--bad);
-  color: var(--bad);
+.confirm > button:only-of-type {
+  grid-column: 1 / -1;
 }
 
-a.button {
-  display: block;
-  text-align: center;
-  text-decoration: none;
-  line-height: 2.75rem;
+/* A second destructive action after the first one's explanation. */
+.entry-note + .confirm {
+  margin-top: 1rem;
+}
+
+/* A set of choices, one of them on. */
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin: 0.5rem 0 0.75rem;
+}
+
+.choices .button {
+  width: auto;
+  min-width: 3.5rem;
+  min-height: var(--control-small);
+  padding: 0 0.75rem;
+}
+
+.range-picker {
+  margin: 1rem 0 1.5rem;
+}
+
+/* ---- empty and loading ------------------------------------------------ */
+
+.state-note {
+  padding: 2.5rem 0;
+  color: var(--ink-dim);
+}
+
+.state-note p {
+  margin: 0 0 0.5rem;
 }
 
 /* ---- output ----------------------------------------------------------- */
@@ -466,86 +746,10 @@ a.button {
   border: 1px solid var(--line-soft);
   border-radius: var(--radius);
   font-family: var(--mono);
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   line-height: 1.45;
   white-space: pre;
   -webkit-overflow-scrolling: touch;
-}
-
-.field-code {
-  font-family: var(--mono);
-  font-size: 0.8125rem;
-  line-height: 1.5;
-  padding: 0.625rem 0.75rem;
-  min-height: 12rem;
-  resize: vertical;
-  /* A compose file is indentation-sensitive, so wrapping it would misrepresent
-   * what the user typed. */
-  white-space: pre;
-  overflow-wrap: normal;
-  overflow-x: auto;
-}
-
-/* ---- inline row actions ----------------------------------------------- */
-
-/* A destructive action inside a row. Quiet, because it sits beside content
- * a thumb is already scrolling past. */
-.row-action {
-  grid-row: 1 / span 2;
-  grid-column: 3;
-  background: none;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  color: var(--ink-dim);
-  font: inherit;
-  font-size: 0.8125rem;
-  padding: 0.375rem 0.625rem;
-  min-height: 2.25rem;
-  cursor: pointer;
-}
-
-.row-action:hover,
-.row-action:focus-visible {
-  color: var(--bad);
-  border-color: var(--bad);
-}
-
-/* Armed: the tap that does it, and a way out, where the first tap was. */
-.row-confirm {
-  grid-row: 1 / span 2;
-  grid-column: 3;
-  display: flex;
-  gap: 0.375rem;
-}
-
-.row-action[data-armed] {
-  color: var(--bad);
-  border-color: var(--bad);
-}
-
-/* Single-line monospace input: refs and paths are identifiers, not prose. */
-.field-mono {
-  font-family: var(--mono);
-  font-size: 0.875rem;
-}
-
-select.field-input {
-  appearance: none;
-  background-image: linear-gradient(45deg, transparent 50%, var(--ink-dim) 50%),
-    linear-gradient(135deg, var(--ink-dim) 50%, transparent 50%);
-  background-position: right 1rem center, right 0.7rem center;
-  background-size: 5px 5px, 5px 5px;
-  background-repeat: no-repeat;
-  padding-right: 2rem;
-}
-
-.entry-note a {
-  color: var(--ink);
-}
-
-/* A note directly under the topbar would otherwise sit on its rule. */
-.topbar + .entry-note {
-  margin-top: 0.875rem;
 }
 
 /* A log pane is the reason someone opened the app at all; give it room. */
@@ -553,23 +757,99 @@ select.field-input {
   max-height: 60vh;
 }
 
+/* Rows out of view are neither laid out nor painted, so a long log costs
+ * about what the visible part of it costs. The intrinsic size keeps the
+ * scrollbar honest for rows the browser has skipped. */
 .log-line {
+  padding-left: 0.5rem;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 1.2rem;
 }
 
-/* stderr, where the answer usually is. */
+/* stderr, where the answer usually is: marked by a rule, and named to a
+ * screen reader, rather than colored as if it were a fault. The name is
+ * generated, so copying a line copies only what the program wrote. */
 .log-stderr {
+  box-shadow: inset 2px 0 0 var(--ink-faint);
+}
+
+.log-stderr::before {
+  content: "" / "stderr: ";
+}
+
+/* A secret shown once. One tap selects all of it, so the phone's own copy
+ * menu works where the clipboard API is unavailable (plain HTTP). */
+.secret {
+  margin: 0 0 0.5rem;
+  padding: 0.75rem;
+  background: var(--raised);
+  border: 1px solid var(--ink);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: var(--text-md);
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: all;
+  -webkit-user-select: all;
+}
+
+/* Compose lines to paste: one tap selects them all. */
+.snippet {
+  margin: 0 0 0.5rem;
+  padding: 0.75rem;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: var(--text-sm);
+  white-space: pre;
+  overflow-x: auto;
+  user-select: all;
+  -webkit-user-select: all;
+}
+
+/* ---- inline row actions ----------------------------------------------- */
+
+/* A destructive action inside a row. Quiet, because it sits beside content
+ * a thumb is already scrolling past. Armed, the tap that does it, and a way
+ * out beside it. */
+.row-confirm {
+  grid-row: 1 / span 2;
+  grid-column: 3;
+  display: flex;
+  gap: 0.375rem;
+}
+
+.row-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-height: var(--control-small);
+  padding: 0 0.625rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--ink-dim);
+  font-size: var(--text-sm);
+}
+
+.row-action:hover,
+.row-action:focus-visible,
+.row-action[data-armed] {
   color: var(--bad);
+  border-color: var(--bad);
 }
 
 /* A secondary way in from a row, without turning the row into two links. */
 .row-aside {
-  display: block;
-  padding: 0.5rem 0.25rem 0.75rem 1.125rem;
-  font-size: 0.8125rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-height: var(--control-small);
+  padding: 0 0.25rem 0 1.125rem;
+  font-size: var(--text-sm);
   color: var(--ink-dim);
-  text-decoration: none;
 }
 
 .row-aside:hover,
@@ -600,7 +880,7 @@ select.field-input {
   grid-template-columns: 1.5rem 1fr;
   column-gap: 0.625rem;
   align-items: start;
-  min-height: 2.75rem;
+  min-height: var(--control-small);
   padding: 0.5rem 0;
   border-bottom: 1px solid var(--line-soft);
   cursor: pointer;
@@ -615,44 +895,20 @@ select.field-input {
 
 .check-name {
   font-family: var(--mono);
-  font-size: 0.875rem;
+  font-size: var(--text-md);
 }
 
 .check-detail {
   grid-column: 2;
   color: var(--ink-dim);
-  font-size: 0.8125rem;
-}
-
-/* A secret shown once. One tap selects all of it, so the phone's own copy
- * menu works where the clipboard API is unavailable (plain HTTP). */
-.secret {
-  margin: 0 0 0.5rem;
-  padding: 0.75rem;
-  background: var(--raised);
-  border: 1px solid var(--ink);
-  border-radius: var(--radius);
-  font-family: var(--mono);
-  font-size: 0.875rem;
-  white-space: pre-wrap;
-  word-break: break-all;
-  user-select: all;
-  -webkit-user-select: all;
+  font-size: var(--text-sm);
 }
 
 .checks-area {
   padding: 0.75rem 0 0.25rem;
-  font-size: 0.8125rem;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--ink-dim);
-}
-
-/* A toggle that is on reads as the filled button: the difference between
- * following and not must be visible without reading the label. */
-.button-quiet[aria-pressed="true"] {
-  background: var(--ink);
-  border-color: var(--ink);
-  color: var(--ground);
 }
 
 /* Shown by the panic hook when the app has stopped. Covers everything, so
@@ -664,25 +920,168 @@ select.field-input {
   display: grid;
   align-content: center;
   gap: 1rem;
-  padding: 2rem var(--gutter);
+  padding: calc(2rem + env(safe-area-inset-top, 0px)) var(--gutter) 2rem;
   background: var(--ground);
 }
 
-/* Rows out of view are neither laid out nor painted, so a long log costs
- * about what the visible part of it costs. The intrinsic size keeps the
- * scrollbar honest for rows the browser has skipped. */
-.log-line {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 1.2rem;
+/* ---- charts ------------------------------------------------------------ */
+
+.chart {
+  /* Room for the time labels below the plot. */
+  margin: 0 0 2.25rem;
+}
+
+.chart-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.375rem;
+  font-size: var(--text-md);
+}
+
+.chart-title {
+  color: var(--ink-dim);
+}
+
+.chart-value {
+  font-family: var(--mono);
+  font-size: var(--text-sm);
+  text-align: right;
+}
+
+.chart-plot {
+  position: relative;
+  height: 9rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.chart-plot svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: pan-y;
+}
+
+.chart-area {
+  fill: var(--ink);
+  opacity: var(--fill-area);
+}
+
+.chart-peak {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.25;
+  opacity: var(--fill-peak);
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-limit {
+  stroke: var(--ink-dim);
+  stroke-dasharray: 4 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart[data-state="degraded"] .chart-area {
+  fill: var(--degraded);
+  opacity: var(--fill-alert);
+}
+
+.chart[data-state="degraded"] .chart-value {
+  color: var(--degraded);
+}
+
+.chart-axis {
+  position: absolute;
+  font-size: var(--text-2xs);
+  color: var(--ink-faint);
+  font-family: var(--mono);
+}
+
+.chart-axis-top { top: 0; left: 0; }
+.chart-axis-start { bottom: -1.25rem; left: 0; }
+.chart-axis-end { bottom: -1.25rem; right: 0; }
+
+.charts {
+  display: grid;
+  gap: 0 2rem;
+}
+
+.sparkline {
+  width: 6rem;
+  height: 1.5rem;
+}
+
+.sparkline path {
+  fill: none;
+  stroke: var(--ink-dim);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+/* The CPU trend: a desktop has room for it, a phone keeps the numbers. */
+.row-link .sparkline {
+  display: none;
+}
+
+.usage {
+  height: 0.5rem;
+  background: var(--line-soft);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.usage svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.usage-fill {
+  fill: var(--ink-dim);
+}
+
+.usage[data-state="degraded"] .usage-fill { fill: var(--degraded); }
+.usage[data-state="unhealthy"] .usage-fill { fill: var(--bad); }
+
+.row-usage {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.375rem 1rem;
+  padding: 0.75rem 0.25rem;
+}
+
+.row-usage .usage {
+  grid-column: 1 / -1;
+}
+
+/* Live figures under a board row's name. */
+.row-figures {
+  grid-column: 2;
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  color: var(--ink-dim);
+}
+
+/* A board row can have a third line; its bar and count span it, so the
+ * bars still read as one edge down the list. */
+.rows-board .row-bar,
+.rows-board .row-count {
+  grid-row: 1 / span 3;
+}
+
+/* A container's now, typical and peak: its bar spans all three lines. */
+.rows-figures .row-bar {
+  grid-row: 1 / span 4;
 }
 
 /* ---- desktop ------------------------------------------------------------ *
  *
  * The phone layout is the primary one; this adapts it rather than replacing
- * it. Navigation moves to a sidebar, which a pointer reaches as easily as a
- * thumb reaches the bottom bar. The board flows into columns, the stack
- * page splits into what is happening and how it is set up, and controls
- * size to their labels instead of spanning the window.
+ * it, and is the only breakpoint. Navigation moves to a sidebar, which a
+ * pointer reaches as easily as a thumb reaches the bottom bar. The board
+ * flows into columns, the stack page splits into what is happening and how
+ * it is set up, and controls size to their labels instead of spanning the
+ * window.
  */
 @media (min-width: 60rem) {
   :root {
@@ -693,6 +1092,11 @@ select.field-input {
     max-width: 76rem;
     margin: 0 0 0 var(--sidebar);
     padding: 0 var(--gutter) 3rem;
+  }
+
+  /* Logs, and a shell, get the width there is: their lines are long. */
+  .shell:has(.log-tall) {
+    max-width: none;
   }
 
   .nav {
@@ -714,11 +1118,18 @@ select.field-input {
 
   .nav-item {
     flex: none;
+    flex-direction: row;
     justify-content: flex-start;
+    gap: 0.625rem;
     min-height: 2.5rem;
     padding: 0 0.75rem;
     border-radius: var(--radius);
-    font-size: 0.9375rem;
+    font-size: var(--text-base);
+  }
+
+  .nav-item .icon {
+    width: 1.125rem;
+    height: 1.125rem;
   }
 
   .nav-item:hover {
@@ -731,24 +1142,51 @@ select.field-input {
     box-shadow: inset 2px 0 0 var(--ink);
   }
 
+  /* A desktop has height to spare, so the title scrolls away. */
   .topbar {
+    position: static;
     padding: 2rem 0 1rem;
   }
 
   .wordmark {
-    font-size: 1.375rem;
+    font-size: var(--text-xl);
   }
 
-  /* The board: a wall of status rather than one long scroll. */
+  /* The board: a wall of status rather than one long scroll. Each group's
+   * heading stays in view while its rows scroll beneath it. */
   .rows-board {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
     column-gap: 2.5rem;
   }
 
+  .group-heading:has(+ .rows-board) {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    margin: 0;
+    padding: 1.5rem 0 0.5rem;
+    background: var(--ground);
+  }
+
+  .rows-board .row-link {
+    grid-template-columns: var(--bar-slot) minmax(0, 1fr) auto auto;
+  }
+
+  .rows-board .row-link .sparkline {
+    display: block;
+    grid-row: 1 / span 3;
+    grid-column: 3;
+  }
+
+  .rows-board .row-count {
+    grid-column: 4;
+  }
+
   /* Actions size to their labels, in one row. */
   .actions,
-  .actions.actions-pair {
+  .actions.actions-pair,
+  .confirm {
     display: flex;
     flex-wrap: wrap;
   }
@@ -757,6 +1195,15 @@ select.field-input {
     width: fit-content;
     min-width: 9rem;
     padding: 0 1.25rem;
+  }
+
+  /* A pointer does not need a thumb-sized face. */
+  .field-mono {
+    font-size: var(--text-md);
+  }
+
+  .field-code {
+    font-size: var(--text-sm);
   }
 
   /* Forms, notes and single controls keep a readable measure. */
@@ -786,7 +1233,6 @@ select.field-input {
 
   /* A row with a second way in keeps both on one line. */
   .row:has(> .row-aside) {
-    display: flex;
     align-items: center;
   }
 
@@ -803,199 +1249,8 @@ select.field-input {
     max-height: calc(100dvh - 22rem);
     min-height: 20rem;
   }
-}
 
-/* ---- charts ------------------------------------------------------------ */
-
-.chart {
-  /* Room for the time labels below the plot. */
-  margin: 0 0 2.25rem;
-}
-
-.chart-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 0.375rem;
-  font-size: 0.875rem;
-}
-
-.chart-title {
-  color: var(--ink-dim);
-}
-
-.chart-value {
-  font-family: var(--mono);
-  font-size: 0.8125rem;
-}
-
-.chart-plot {
-  position: relative;
-  height: 9rem;
-  border-bottom: 1px solid var(--line);
-}
-
-.chart-plot svg {
-  display: block;
-  width: 100%;
-  height: 100%;
-  touch-action: pan-y;
-}
-
-.chart-area {
-  fill: var(--ink);
-  opacity: 0.16;
-}
-
-.chart-peak {
-  fill: none;
-  stroke: var(--ink);
-  stroke-width: 1.25;
-  opacity: 0.55;
-  vector-effect: non-scaling-stroke;
-}
-
-.chart-limit {
-  stroke: var(--ink-dim);
-  stroke-dasharray: 4 4;
-  vector-effect: non-scaling-stroke;
-}
-
-.chart[data-state="degraded"] .chart-area {
-  fill: var(--degraded);
-  opacity: 0.35;
-}
-
-.chart[data-state="degraded"] .chart-value {
-  color: var(--degraded);
-}
-
-.chart-axis {
-  position: absolute;
-  font-size: 0.6875rem;
-  color: var(--ink-faint);
-  font-family: var(--mono);
-}
-
-.chart-axis-top { top: 0; left: 0; }
-.chart-axis-start { bottom: -1.25rem; left: 0; }
-.chart-axis-end { bottom: -1.25rem; right: 0; }
-
-.sparkline {
-  width: 6rem;
-  height: 1.5rem;
-}
-
-.sparkline path {
-  fill: none;
-  stroke: var(--ink-dim);
-  stroke-width: 1.5;
-  vector-effect: non-scaling-stroke;
-}
-
-.usage {
-  height: 0.5rem;
-  background: var(--line-soft);
-  border-radius: 999px;
-  overflow: hidden;
-}
-
-.usage-fill {
-  height: 100%;
-  background: var(--ink-dim);
-}
-
-.usage[data-state="degraded"] .usage-fill { background: var(--degraded); }
-.usage[data-state="unhealthy"] .usage-fill { background: var(--bad); }
-
-.range-picker {
-  display: flex;
-  gap: 0.375rem;
-  margin: 1rem 0 1.5rem;
-  flex-wrap: wrap;
-}
-
-.range-picker .button {
-  width: auto;
-  min-width: 3.5rem;
-  min-height: 2.25rem;
-  padding: 0 0.75rem;
-}
-
-.charts {
-  display: grid;
-  gap: 0 2rem;
-}
-
-@media (min-width: 60rem) {
   .charts {
     grid-template-columns: repeat(auto-fill, minmax(22rem, 1fr));
   }
-}
-
-.row-usage {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 0.375rem 1rem;
-  padding: 0.75rem 0.25rem;
-}
-
-.row-usage .usage {
-  grid-column: 1 / -1;
-}
-
-/* Live figures under a board row's name. */
-.row-figures {
-  grid-column: 2;
-  font-family: var(--mono);
-  font-size: 0.75rem;
-  color: var(--ink-dim);
-}
-
-/* A board row can have a third line; its bar and count span it, so the
- * bars still read as one edge down the list. */
-.rows-board .row-bar,
-.rows-board .row-count {
-  grid-row: 1 / span 3;
-}
-
-/* The CPU trend: a desktop has room for it, a phone keeps the numbers. */
-.row-link .sparkline {
-  display: none;
-}
-
-@media (min-width: 60rem) {
-  .rows-board .row-link {
-    grid-template-columns: 4px 1fr auto auto;
-  }
-
-  .rows-board .row-link .sparkline {
-    display: block;
-    grid-row: 1 / span 3;
-    grid-column: 3;
-  }
-
-  .rows-board .row-count {
-    grid-column: 4;
-  }
-}
-
-/* Compose lines to paste: one tap selects them all. */
-.snippet {
-  margin: 0 0 0.5rem;
-  padding: 0.75rem;
-  background: var(--raised);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  font-family: var(--mono);
-  font-size: 0.8125rem;
-  white-space: pre;
-  overflow-x: auto;
-  user-select: all;
-  -webkit-user-select: all;
-}
-
-/* A container's now, typical and peak: its bar spans all three lines. */
-.rows-figures .row-bar {
-  grid-row: 1 / span 4;
 }

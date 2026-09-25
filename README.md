@@ -29,7 +29,8 @@ UI a reconciler with buttons. GhostDock is built around that:
   are shown before anything is removed.
 - **Drive it from a phone or a desktop.** The phone layout is the primary
   one; a wide screen gets a sidebar, a board in columns and a two-pane stack
-  page.
+  page. Light or dark follows the device, or is chosen per device under
+  Settings, Appearance.
 - **Let another program in, within limits.** API tokens carry exactly the
   permissions you grant, one action at a time.
 

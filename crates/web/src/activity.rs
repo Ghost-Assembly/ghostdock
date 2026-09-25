@@ -6,7 +6,7 @@ use shared::audit::AuditEntry;
 use crate::api;
 use crate::load::Load;
 use crate::screen::Screen;
-use crate::ui::Row;
+use crate::ui::{Row, Topbar};
 
 #[component]
 pub fn Activity() -> impl IntoView {
@@ -20,10 +20,7 @@ pub fn Activity() -> impl IntoView {
     });
 
     view! {
-        <header class="topbar">
-            <h1 class="wordmark">"Activity"</h1>
-            <a class="topbar-link" href="/settings">"Back"</a>
-        </header>
+        <Topbar title="Activity" back="/settings" />
 
         {move || match entries.get() {
             Load::Loading => view! { <p class="state-note">"Loading"</p> }.into_any(),
@@ -46,11 +43,11 @@ pub fn Activity() -> impl IntoView {
                         .into_iter()
                         .map(|entry| {
                             // Failures are the reason to read this at all, so
-                            // they are the only rows that carry colour.
+                            // they are the only rows that carry a state.
                             let state = if entry.action.starts_with("failed") {
                                 "unhealthy"
                             } else {
-                                "running"
+                                "none"
                             };
                             let detail = format!("{} on {}", entry.username, entry.target);
                             let when = crate::time::local(entry.at, "%d %b %H:%M");

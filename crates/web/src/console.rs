@@ -16,7 +16,7 @@ use shared::logs::{LogLine, Stream};
 use web_sys::MessageEvent;
 
 use crate::screen::Screen;
-use crate::ui::{Field, OutputLine, pinned, to_bottom};
+use crate::ui::{Field, OutputLine, Topbar, came_from, pinned, to_bottom};
 use crate::{api, socket};
 
 /// Lines kept on screen.
@@ -145,10 +145,7 @@ pub fn Console() -> impl IntoView {
     };
 
     view! {
-        <header class="topbar">
-            <h1 class="wordmark">"Shell"</h1>
-            <a class="topbar-link" href="/">"Back"</a>
-        </header>
+        <Topbar title="Shell" back=came_from("/") />
 
         <p class="entry-note">
             {move || {
@@ -160,7 +157,7 @@ pub fn Console() -> impl IntoView {
             }}
         </p>
 
-        <pre class="log log-tall" node_ref=pane>
+        <pre class="log log-tall" node_ref=pane tabindex="0">
             <For each=move || lines.get() key=|row| row.seq let:row>
                 <OutputLine text=row.line.text.clone() stderr=row.line.stream == Stream::Stderr />
             </For>
