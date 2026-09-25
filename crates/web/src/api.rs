@@ -12,8 +12,9 @@ use serde::de::DeserializeOwned;
 use shared::audit::AuditEntry;
 use shared::auth::{Account, AuthStatus, Credentials, PasswordChange, User};
 use shared::cleanup::{CleanupPreview, CleanupRequest, CleanupResult, CleanupScope};
+use shared::container::Container;
 use shared::deployment::{Deployment, DeploymentDetail, NewStack, RegisteredStack, StackCompose};
-use shared::host::{Host, HostInfo};
+use shared::host::HostInfo;
 use shared::logs::Logs;
 use shared::metrics::{ContainerFigures, Now, Range, Recommendation, Series, Target};
 use shared::source::{
@@ -25,6 +26,11 @@ use shared::token::{ApiToken, CreatedApiToken, NewApiToken};
 use shared::update::{AutoApply, StackUpdate, UpdateStatus};
 
 const BASE: &str = "/api/v1";
+
+/// The one host GhostDock manages. Every host-scoped route carries an id so
+/// that adding more later is routing rather than a redesign; until then it
+/// is the server's own, which is registered first and so is always 1.
+pub const HOST: i64 = 1;
 
 /// How long a read may take before its screen stops waiting and says so.
 const READ_TIMEOUT_MS: u32 = 15_000;
@@ -85,6 +91,14 @@ async fn read<T: DeserializeOwned>(response: Response) -> Result<T> {
     Err(refusal(response).await)
 }
 
+/// Success with nothing to read, or the server's reason for refusing.
+async fn done(response: Response) -> Result<()> {
+    if (200..300).contains(&response.status()) {
+        return Ok(());
+    }
+    Err(refusal(response).await)
+}
+
 thread_local! {
     static ON_UNAUTHENTICATED: RefCell<Option<Rc<dyn Fn()>>> = const { RefCell::new(None) };
 }
@@ -117,30 +131,46 @@ async fn refusal(response: Response) -> Error {
     }
 }
 
-async fn get<T: DeserializeOwned>(path: &str) -> Result<T> {
-    let response = request("GET", &format!("{BASE}{path}"))
+/// Sends a request without a body and hands back whatever answered.
+async fn call(method: &str, path: &str) -> Result<Response> {
+    request(method, &format!("{BASE}{path}"))
         .send()
         .await
-        .map_err(|e| Error::network(&e.to_string()))?;
-    read(response).await
+        .map_err(|e| Error::network(&e.to_string()))
 }
 
-async fn post<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result<T> {
-    let response = request("POST", &format!("{BASE}{path}"))
+/// Sends `body` as JSON and hands back whatever answered.
+async fn call_json<B: Serialize>(method: &str, path: &str, body: &B) -> Result<Response> {
+    request(method, &format!("{BASE}{path}"))
         .json(body)
         .map_err(|e| Error::network(&e.to_string()))?
         .send()
         .await
-        .map_err(|e| Error::network(&e.to_string()))?;
-    read(response).await
+        .map_err(|e| Error::network(&e.to_string()))
+}
+
+async fn get<T: DeserializeOwned>(path: &str) -> Result<T> {
+    read(call("GET", path).await?).await
+}
+
+async fn post<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result<T> {
+    read(call_json("POST", path, body).await?).await
+}
+
+async fn put<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result<T> {
+    read(call_json("PUT", path, body).await?).await
 }
 
 async fn post_empty<T: DeserializeOwned>(path: &str) -> Result<T> {
-    let response = request("POST", &format!("{BASE}{path}"))
-        .send()
-        .await
-        .map_err(|e| Error::network(&e.to_string()))?;
-    read(response).await
+    read(call("POST", path).await?).await
+}
+
+/// A DELETE that expects no body back.
+///
+/// The server explains conflicts ("stacks are still defined in this
+/// repository"), and that explanation is the whole value of a refusal.
+async fn delete(path: &str) -> Result<()> {
+    done(call("DELETE", path).await?).await
 }
 
 pub async fn auth_status() -> Result<AuthStatus> {
@@ -168,16 +198,7 @@ pub async fn remove_account(id: i64) -> Result<()> {
 }
 
 pub async fn change_password(change: &PasswordChange) -> Result<()> {
-    let response = request("PUT", &format!("{BASE}/auth/password"))
-        .json(change)
-        .map_err(|e| Error::network(&e.to_string()))?
-        .send()
-        .await
-        .map_err(|e| Error::network(&e.to_string()))?;
-    if (200..300).contains(&response.status()) {
-        return Ok(());
-    }
-    read::<()>(response).await
+    done(call_json("PUT", "/auth/password", change).await?).await
 }
 
 pub async fn tokens() -> Result<Vec<ApiToken>> {
@@ -193,11 +214,7 @@ pub async fn revoke_token(id: i64) -> Result<()> {
 }
 
 pub async fn logout() -> Result<()> {
-    let response = request("POST", &format!("{BASE}/auth/logout"))
-        .send()
-        .await
-        .map_err(|e| Error::network(&e.to_string()))?;
-
+    let response = call("POST", "/auth/logout").await?;
     let status = response.status();
     // A 401 means there was no session left to end: signed out either way.
     if (200..300).contains(&status) || status == 401 {
@@ -210,22 +227,23 @@ pub async fn logout() -> Result<()> {
     }
 }
 
-pub async fn hosts() -> Result<Vec<Host>> {
-    get("/hosts").await
+pub async fn host_info() -> Result<HostInfo> {
+    get(&format!("/hosts/{HOST}")).await
 }
 
-pub async fn host_info(host_id: i64) -> Result<HostInfo> {
-    get(&format!("/hosts/{host_id}")).await
+pub async fn stacks() -> Result<Vec<Stack>> {
+    get(&format!("/hosts/{HOST}/stacks")).await
 }
 
-pub async fn stacks(host_id: i64) -> Result<Vec<Stack>> {
-    get(&format!("/hosts/{host_id}/stacks")).await
+/// Every container on the host, without the stacks worked out from them.
+pub async fn containers() -> Result<Vec<Container>> {
+    get(&format!("/hosts/{HOST}/containers")).await
 }
 
 // ---- stacks -----------------------------------------------------------
 
-pub async fn create_stack(host_id: i64, new: &NewStack) -> Result<RegisteredStack> {
-    post(&format!("/hosts/{host_id}/stacks"), new).await
+pub async fn create_stack(new: &NewStack) -> Result<RegisteredStack> {
+    post(&format!("/hosts/{HOST}/stacks"), new).await
 }
 
 pub async fn stack(id: i64) -> Result<RegisteredStack> {
@@ -240,34 +258,11 @@ pub async fn stack_with_yaml(id: i64) -> Result<(RegisteredStack, String)> {
 }
 
 pub async fn update_stack(id: i64, new: &NewStack) -> Result<RegisteredStack> {
-    let response = request("PUT", &format!("{BASE}/stacks/{id}"))
-        .json(new)
-        .map_err(|e| Error::network(&e.to_string()))?
-        .send()
-        .await
-        .map_err(|e| Error::network(&e.to_string()))?;
-    read(response).await
+    put(&format!("/stacks/{id}"), new).await
 }
 
 pub async fn delete_stack(id: i64) -> Result<()> {
     delete(&format!("/stacks/{id}")).await
-}
-
-/// A DELETE that expects no body back.
-async fn delete(path: &str) -> Result<()> {
-    let response = request("DELETE", &format!("{BASE}{path}"))
-        .send()
-        .await
-        .map_err(|e| Error::network(&e.to_string()))?;
-
-    let status = response.status();
-    if (200..300).contains(&status) {
-        return Ok(());
-    }
-
-    // The server explains conflicts ("stacks are still defined in this
-    // repository"), and that explanation is the whole value of the response.
-    Err(refusal(response).await)
 }
 
 /// Starts an operation. Returns as soon as it is recorded, not when it ends;
@@ -291,13 +286,11 @@ pub async fn credentials() -> Result<Vec<Credential>> {
 }
 
 pub async fn set_repo_credential(repo_id: i64, credential_id: Option<i64>) -> Result<Repo> {
-    let response = request("PUT", &format!("{BASE}/repos/{repo_id}"))
-        .json(&shared::source::RepoCredential { credential_id })
-        .map_err(|e| Error::network(&e.to_string()))?
-        .send()
-        .await
-        .map_err(|e| Error::network(&e.to_string()))?;
-    read(response).await
+    put(
+        &format!("/repos/{repo_id}"),
+        &shared::source::RepoCredential { credential_id },
+    )
+    .await
 }
 
 pub async fn discover(repo_id: i64, request: &DiscoverRequest) -> Result<Discovery> {
@@ -328,8 +321,8 @@ pub async fn delete_repo(id: i64) -> Result<()> {
     delete(&format!("/repos/{id}")).await
 }
 
-pub async fn create_git_stack(host_id: i64, new: &NewGitStack) -> Result<RegisteredStack> {
-    post(&format!("/hosts/{host_id}/stacks/git"), new).await
+pub async fn create_git_stack(new: &NewGitStack) -> Result<RegisteredStack> {
+    post(&format!("/hosts/{HOST}/stacks/git"), new).await
 }
 
 /// Variable names only; values never leave the server.
@@ -339,8 +332,8 @@ pub async fn stack_env_keys(stack_id: i64) -> Result<StackEnvKeys> {
 
 /// One variable's address. The name is encoded, so whatever was typed stays
 /// one path segment; screens also refuse names the server would.
-fn env_url(stack_id: i64, key: &str) -> String {
-    format!("{BASE}/stacks/{stack_id}/env/{}", component(key))
+fn env_path(stack_id: i64, key: &str) -> String {
+    format!("/stacks/{stack_id}/env/{}", component(key))
 }
 
 /// Sets one variable, leaving the others untouched.
@@ -349,38 +342,22 @@ pub async fn set_stack_env_one(
     key: &str,
     body: &shared::source::EnvValue,
 ) -> Result<StackEnvKeys> {
-    let response = request("PUT", &env_url(stack_id, key))
-        .json(body)
-        .map_err(|e| Error::network(&e.to_string()))?
-        .send()
-        .await
-        .map_err(|e| Error::network(&e.to_string()))?;
-    read(response).await
+    put(&env_path(stack_id, key), body).await
 }
 
 pub async fn delete_stack_env_one(stack_id: i64, key: &str) -> Result<StackEnvKeys> {
-    let response = request("DELETE", &env_url(stack_id, key))
-        .send()
-        .await
-        .map_err(|e| Error::network(&e.to_string()))?;
-    read(response).await
+    read(call("DELETE", &env_path(stack_id, key)).await?).await
 }
 
 #[allow(dead_code)]
 pub async fn set_stack_env(stack_id: i64, env: &StackEnv) -> Result<StackEnvKeys> {
-    let response = request("PUT", &format!("{BASE}/stacks/{stack_id}/env"))
-        .json(env)
-        .map_err(|e| Error::network(&e.to_string()))?
-        .send()
-        .await
-        .map_err(|e| Error::network(&e.to_string()))?;
-    read(response).await
+    put(&format!("/stacks/{stack_id}/env"), env).await
 }
 
 // ---- updates ----------------------------------------------------------
 
-pub async fn updates(host_id: i64) -> Result<Vec<StackUpdate>> {
-    get(&format!("/hosts/{host_id}/updates")).await
+pub async fn updates() -> Result<Vec<StackUpdate>> {
+    get(&format!("/hosts/{HOST}/updates")).await
 }
 
 /// Checks one stack now, rather than waiting for the hourly sweep.
@@ -389,35 +366,25 @@ pub async fn check_stack(id: i64) -> Result<UpdateStatus> {
 }
 
 pub async fn set_auto_apply(id: i64, enabled: bool) -> Result<AutoApply> {
-    let response = request("PUT", &format!("{BASE}/stacks/{id}/auto-apply"))
-        .json(&AutoApply { enabled })
-        .map_err(|e| Error::network(&e.to_string()))?
-        .send()
-        .await
-        .map_err(|e| Error::network(&e.to_string()))?;
-    read(response).await
+    put(&format!("/stacks/{id}/auto-apply"), &AutoApply { enabled }).await
 }
 
 // ---- operations -------------------------------------------------------
 
-pub async fn container_logs(host_id: i64, container: &str) -> Result<Logs> {
+pub async fn container_logs(container: &str) -> Result<Logs> {
     get(&format!(
-        "/hosts/{host_id}/containers/{}/logs",
+        "/hosts/{HOST}/containers/{}/logs",
         component(container)
     ))
     .await
 }
 
-pub async fn cleanup_preview(host_id: i64) -> Result<CleanupPreview> {
-    get(&format!("/hosts/{host_id}/cleanup")).await
+pub async fn cleanup_preview() -> Result<CleanupPreview> {
+    get(&format!("/hosts/{HOST}/cleanup")).await
 }
 
-pub async fn run_cleanup(host_id: i64, scope: CleanupScope) -> Result<CleanupResult> {
-    post(
-        &format!("/hosts/{host_id}/cleanup"),
-        &CleanupRequest { scope },
-    )
-    .await
+pub async fn run_cleanup(scope: CleanupScope) -> Result<CleanupResult> {
+    post(&format!("/hosts/{HOST}/cleanup"), &CleanupRequest { scope }).await
 }
 
 pub async fn audit() -> Result<Vec<AuditEntry>> {
@@ -425,12 +392,12 @@ pub async fn audit() -> Result<Vec<AuditEntry>> {
 }
 
 pub async fn metrics_now() -> Result<Now> {
-    get("/hosts/1/metrics/now").await
+    get(&format!("/hosts/{HOST}/metrics/now")).await
 }
 
 pub async fn metrics_series(target: &Target, range: Range) -> Result<Series> {
     get(&format!(
-        "/hosts/1/metrics/series?subject={}&range={}",
+        "/hosts/{HOST}/metrics/series?subject={}&range={}",
         component(&target.to_param()),
         range.as_str()
     ))
@@ -439,7 +406,7 @@ pub async fn metrics_series(target: &Target, range: Range) -> Result<Series> {
 
 pub async fn container_figures(project: &str, range: Range) -> Result<Vec<ContainerFigures>> {
     get(&format!(
-        "/hosts/1/metrics/containers?project={}&range={}",
+        "/hosts/{HOST}/metrics/containers?project={}&range={}",
         component(project),
         range.as_str()
     ))
@@ -447,7 +414,7 @@ pub async fn container_figures(project: &str, range: Range) -> Result<Vec<Contai
 }
 
 pub async fn sizing() -> Result<Vec<Recommendation>> {
-    get("/hosts/1/sizing").await
+    get(&format!("/hosts/{HOST}/sizing")).await
 }
 
 /// Percent-encodes everything but unreserved characters, for a query value
@@ -470,14 +437,14 @@ pub fn component(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{component, env_url};
+    use super::{component, env_path};
 
     #[test]
     fn a_path_segment_stays_one_segment() {
-        assert_eq!(env_url(3, "API_KEY"), "/api/v1/stacks/3/env/API_KEY");
+        assert_eq!(env_path(3, "API_KEY"), "/stacks/3/env/API_KEY");
         assert_eq!(
-            env_url(3, "A/../B?x#y"),
-            "/api/v1/stacks/3/env/A%2F..%2FB%3Fx%23y"
+            env_path(3, "A/../B?x#y"),
+            "/stacks/3/env/A%2F..%2FB%3Fx%23y"
         );
     }
 

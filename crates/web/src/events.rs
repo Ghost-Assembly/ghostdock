@@ -23,7 +23,7 @@ use crate::socket;
 // `Send + Sync` because Leptos's lifecycle hooks require it in order to
 // support server-side rendering. Wasm is single threaded, so the Mutex never
 // contends; it is the price of using the same API as everything else.
-type Handler = Arc<dyn Fn(ServerEvent) + Send + Sync>;
+type Handler = Arc<dyn Fn(&ServerEvent) + Send + Sync>;
 type Reconnect = Arc<dyn Fn() + Send + Sync>;
 
 /// The shared event stream.
@@ -54,7 +54,9 @@ impl Events {
     }
 
     /// Calls `handler` for every event, until the calling view is disposed.
-    pub fn on(&self, handler: impl Fn(ServerEvent) + Send + Sync + 'static) {
+    /// Lent rather than given: every subscriber gets the same event, and a
+    /// copy each of the 5 s figures would be a deep clone per subscriber.
+    pub fn on(&self, handler: impl Fn(&ServerEvent) + Send + Sync + 'static) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.lock().push((id, Arc::new(handler)));
 
@@ -128,7 +130,7 @@ impl Events {
             .collect();
 
         for handler in snapshot {
-            handler(event.clone());
+            handler(event);
         }
     }
 }

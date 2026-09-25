@@ -10,13 +10,15 @@ use shared::stack::{Stack, StackState};
 use std::time::Duration;
 
 use shared::event::ServerEvent;
-use shared::metrics::{Now, format_bytes, format_cores};
+use shared::metrics::{Now, StackNow};
 
 use crate::api;
 use crate::charts::Sparkline;
 use crate::events::use_events;
 use crate::load::Load;
 use crate::screen::Screen;
+use crate::status::usage;
+use crate::ui::Row;
 
 /// How alarming a state is. Drives ordering, so the worst is read first.
 fn severity(state: StackState) -> u8 {
@@ -53,6 +55,16 @@ fn state_key(state: StackState) -> &'static str {
     }
 }
 
+/// Which of its states the board is in. The stacks themselves are read
+/// separately, so a reload that changes one row does not rebuild the rest.
+#[derive(Clone, PartialEq)]
+enum Shown {
+    Loading,
+    Failed(String),
+    Empty,
+    Board,
+}
+
 #[component]
 pub fn Stacks() -> impl IntoView {
     let load = RwSignal::new(Load::<Vec<Stack>>::Loading);
@@ -73,45 +85,33 @@ pub fn Stacks() -> impl IntoView {
     let refresh = move || {
         let mine = latest.get_value() + 1;
         latest.set_value(mine);
-        let current = move || latest.try_get_value() == Some(mine);
         screen.load(async move {
-            let hosts = match api::hosts().await {
-                Ok(hosts) => hosts,
-                Err(e) => {
-                    if current() {
-                        load.set(Load::Failed(e.message));
-                    }
-                    return;
-                }
-            };
-
-            let Some(host) = hosts.first() else {
-                if current() {
-                    load.set(Load::Ready(Vec::new()));
-                }
-                return;
-            };
-
-            if let Ok(info) = api::host_info(host.id).await
-                && current()
-            {
-                problems.set(info.problems);
-            }
-
-            let answer = api::stacks(host.id).await;
-            if !current() {
+            let answer = api::stacks().await;
+            if latest.try_get_value() != Some(mine) {
                 return;
             }
             load.set(match answer {
                 Ok(mut stacks) => {
-                    stacks.sort_by_key(|s| (severity(s.state), s.project.clone()));
+                    stacks.sort_by(|a, b| {
+                        (severity(a.state), &a.project).cmp(&(severity(b.state), &b.project))
+                    });
                     Load::Ready(stacks)
                 }
                 Err(e) => Load::Failed(e.message),
             });
         });
     };
+    // Found once, at startup, so read once here rather than on every
+    // container event; again only after a reconnect, which may be a restart.
+    let read_problems = move || {
+        screen.load(async move {
+            if let Ok(info) = api::host_info().await {
+                problems.set(info.problems);
+            }
+        });
+    };
     refresh();
+    read_problems();
     screen.load(async move {
         if let Ok(now) = api::metrics_now().await {
             figures.set(Some(now));
@@ -122,22 +122,29 @@ pub fn Stacks() -> impl IntoView {
     // is a reason to look again.
     if let Some(events) = use_events() {
         let reload = screen.coalesce(Duration::from_millis(400), refresh);
-        events.on(move |event| {
-            if matches!(
-                event,
-                ServerEvent::ContainerChanged { .. } | ServerEvent::DeploymentFinished { .. }
-            ) {
+        events.on(move |event| match event {
+            ServerEvent::ContainerChanged { .. } | ServerEvent::DeploymentFinished { .. } => {
                 reload();
             }
+            ServerEvent::Metrics { now } => figures.set(Some((**now).clone())),
+            _ => {}
         });
-        events.on_reconnect(refresh);
+        events.on_reconnect(move || {
+            refresh();
+            read_problems();
+        });
         events.watch_metrics();
-        events.on(move |event| {
-            if let ServerEvent::Metrics { now } = event {
-                figures.set(Some(*now));
-            }
-        });
     }
+
+    let shown = Memo::new(move |_| {
+        load.with(|l| match l {
+            Load::Loading => Shown::Loading,
+            Load::Failed(message) => Shown::Failed(message.clone()),
+            Load::Ready(stacks) if stacks.is_empty() => Shown::Empty,
+            Load::Ready(_) => Shown::Board,
+        })
+    });
+    let stacks = Memo::new(move |_| load.with(|l| l.ready().cloned().unwrap_or_default()));
 
     view! {
         <header class="topbar">
@@ -153,16 +160,16 @@ pub fn Stacks() -> impl IntoView {
                 .collect_view()
         }}
 
-        {move || match load.get() {
-            Load::Loading => view! { <p class="state-note">"Reading containers"</p> }.into_any(),
-            Load::Failed(message) => view! {
+        {move || match shown.get() {
+            Shown::Loading => view! { <p class="state-note">"Reading containers"</p> }.into_any(),
+            Shown::Failed(message) => view! {
                 <div class="state-note">
                     <p>"Could not read your stacks."</p>
                     <p>{message}</p>
                 </div>
             }
             .into_any(),
-            Load::Ready(stacks) if stacks.is_empty() => view! {
+            Shown::Empty => view! {
                 <div class="state-note">
                     <p>"No stacks yet."</p>
                     <p>
@@ -172,32 +179,14 @@ pub fn Stacks() -> impl IntoView {
                 </div>
             }
             .into_any(),
-            Load::Ready(stacks) => view! { <Board stacks figures /> }.into_any(),
+            Shown::Board => view! { <Board stacks figures /> }.into_any(),
         }}
     }
 }
 
-#[component]
-fn Board(stacks: Vec<Stack>, figures: RwSignal<Option<Now>>) -> impl IntoView {
-    let attention: Vec<Stack> = stacks
-        .iter()
-        .filter(|s| needs_attention(s.state))
-        .cloned()
-        .collect();
-    let settled: Vec<Stack> = stacks
-        .iter()
-        .filter(|s| !needs_attention(s.state))
-        .cloned()
-        .collect();
-
-    let has_attention = !attention.is_empty();
-    let has_settled = !settled.is_empty();
-    let settled_heading = if has_attention {
-        "Everything else"
-    } else {
-        "All stacks"
-    };
-
+/// The verdict line, its tone, and the counts beneath it.
+fn verdict(stacks: &[Stack]) -> (String, &'static str, String) {
+    let attention: Vec<&Stack> = stacks.iter().filter(|s| needs_attention(s.state)).collect();
     let containers: usize = stacks.iter().map(|s| s.total_count).sum();
     let running: usize = stacks.iter().map(|s| s.running_count).sum();
     let count_of = |state| stacks.iter().filter(|s| s.state == state).count();
@@ -205,7 +194,7 @@ fn Board(stacks: Vec<Stack>, figures: RwSignal<Option<Now>>) -> impl IntoView {
     // Registered but never deployed: not running, and not a problem either.
     let undeployed = count_of(StackState::Empty);
 
-    let (verdict, tone) = if !attention.is_empty() {
+    let (line, tone) = if !attention.is_empty() {
         let n = attention.len();
         let tone = if attention.iter().any(|s| s.state == StackState::Unhealthy) {
             "bad"
@@ -248,106 +237,125 @@ fn Board(stacks: Vec<Stack>, figures: RwSignal<Option<Now>>) -> impl IntoView {
     if undeployed > 0 {
         counts.push(format!("{undeployed} not deployed"));
     }
-    let count_line = counts.join(", ");
+    (line, tone, counts.join(", "))
+}
+
+/// What one row shows, and so what identifies it: a row whose content is
+/// unchanged by a reload is left exactly as it is, sparkline and all.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct RowData {
+    project: String,
+    /// Only a managed stack has anything to open.
+    id: Option<i64>,
+    detail: String,
+    count: String,
+    state: &'static str,
+}
+
+impl RowData {
+    fn of(stack: &Stack) -> Self {
+        let detail = if stack.managed.as_ref().is_some_and(|m| m.busy) {
+            "working".to_owned()
+        } else if stack.managed.is_none() {
+            // Says why there is nothing to tap, rather than leaving a dead row.
+            format!("{}, not managed by GhostDock", state_word(stack.state))
+        } else {
+            state_word(stack.state).to_owned()
+        };
+        Self {
+            project: stack.project.clone(),
+            id: stack.managed.as_ref().map(|m| m.id),
+            detail,
+            count: format!("{}/{}", stack.running_count, stack.total_count),
+            state: state_key(stack.state),
+        }
+    }
+}
+
+#[component]
+fn Board(stacks: Memo<Vec<Stack>>, figures: RwSignal<Option<Now>>) -> impl IntoView {
+    let rows = move |attention: bool| {
+        Memo::new(move |_| {
+            stacks.with(|all| {
+                all.iter()
+                    .filter(|s| needs_attention(s.state) == attention)
+                    .map(RowData::of)
+                    .collect::<Vec<_>>()
+            })
+        })
+    };
+    let (attention, settled) = (rows(true), rows(false));
+    let summary = Memo::new(move |_| stacks.with(|all| verdict(all)));
 
     view! {
         <section class="verdict">
-            <p class="verdict-line" data-tone=tone>{verdict}</p>
-            <p class="verdict-count">{count_line}</p>
+            <p class="verdict-line" data-tone=move || summary.with(|s| s.1)>
+                {move || summary.with(|s| s.0.clone())}
+            </p>
+            <p class="verdict-count">{move || summary.with(|s| s.2.clone())}</p>
         </section>
 
-        <Show when=move || has_attention>
+        <Show when=move || attention.with(|a| !a.is_empty())>
             <h2 class="group-heading">"Needs attention"</h2>
-            <StackRows stacks=attention.clone() figures />
+            <StackRows rows=attention figures />
         </Show>
 
-        <Show when=move || has_settled>
-            <h2 class="group-heading">{settled_heading}</h2>
-            <StackRows stacks=settled.clone() figures />
+        <Show when=move || settled.with(|s| !s.is_empty())>
+            <h2 class="group-heading">
+                {move || if attention.with(Vec::is_empty) { "All stacks" } else { "Everything else" }}
+            </h2>
+            <StackRows rows=settled figures />
         </Show>
     }
 }
 
 #[component]
-fn StackRows(stacks: Vec<Stack>, figures: RwSignal<Option<Now>>) -> impl IntoView {
+fn StackRows(rows: Memo<Vec<RowData>>, figures: RwSignal<Option<Now>>) -> impl IntoView {
     view! {
         // Flows into columns where there is room: a board is scanned, not read.
         <ul class="rows rows-board">
-            {stacks
-                .into_iter()
-                .map(|stack| {
-                    let detail = if stack.managed.as_ref().is_some_and(|m| m.busy) {
-                        "working".to_owned()
-                    } else if stack.managed.is_none() {
-                        // Says why there is nothing to tap, rather than
-                        // leaving a dead row.
-                        format!("{}, not managed by GhostDock", state_word(stack.state))
-                    } else {
-                        state_word(stack.state).to_owned()
-                    };
-                    let count = format!("{}/{}", stack.running_count, stack.total_count);
-                    let bar = state_key(stack.state);
-                    let project = stack.project.clone();
-
-                    // Only a managed stack has anything to open.
-                    match stack.managed.as_ref().map(|m| m.id) {
-                        Some(id) => view! {
-                            <li class="row">
-                                <a class="row-link" href=format!("/stacks/{id}")>
-                                    <span class="row-bar" data-state=bar></span>
-                                    <span class="row-name">{project.clone()}</span>
-                                    <span class="row-detail">{detail}</span>
-                                    {row_figures(figures, project.clone())}
-                                    <span class="row-count">{count}</span>
-                                </a>
-                            </li>
-                        }
-                        .into_any(),
-                        None => view! {
-                            <li class="row">
-                                <span class="row-link">
-                                    <span class="row-bar" data-state=bar></span>
-                                    <span class="row-name">{project.clone()}</span>
-                                    <span class="row-detail">{detail}</span>
-                                    {row_figures(figures, project.clone())}
-                                    <span class="row-count">{count}</span>
-                                </span>
-                            </li>
-                        }
-                        .into_any(),
-                    }
-                })
-                .collect_view()}
+            <For each=move || rows.get() key=|row| row.clone() let:row>
+                <Row
+                    state=row.state
+                    name=row.project.clone()
+                    href=row.id.map(|id| format!("/stacks/{id}"))
+                    detail=row.detail
+                    count=row.count
+                >
+                    <RowFigures figures project=row.project />
+                </Row>
+            </For>
         </ul>
     }
 }
 
 /// A running stack's CPU and memory now, and on a desktop its last hour of
-/// CPU. Reads only its own stack from the snapshot: forty rows each cloning
-/// the whole of it every 5 s would be waste.
-fn row_figures(figures: RwSignal<Option<Now>>, project: String) -> impl IntoView {
-    move || {
-        figures
-            .with(|n| {
-                n.as_ref()?
-                    .stacks
-                    .iter()
-                    .find(|s| s.project == project)
-                    .cloned()
+/// CPU. Reads only its own stack from the snapshot, and redraws the
+/// sparkline only when its hour changes, once a minute, rather than with
+/// every 5 s figure.
+#[component]
+fn RowFigures(figures: RwSignal<Option<Now>>, project: String) -> impl IntoView {
+    fn find<'a>(now: &'a Option<Now>, project: &str) -> Option<&'a StackNow> {
+        now.as_ref()?.stacks.iter().find(|s| s.project == project)
+    }
+    let project = StoredValue::new(project);
+    // Present once the stack is in the figures, even with nothing measured.
+    let now = Memo::new(move |_| {
+        figures.with(|n| {
+            project.with_value(|p| {
+                find(n, p).map(|s| usage(s.reading.cpu, s.reading.mem).unwrap_or_default())
             })
-            .map(|s| {
-                let parts: Vec<String> = [
-                    s.reading.cpu.map(format_cores),
-                    s.reading.mem.map(format_bytes),
-                ]
-                .into_iter()
-                .flatten()
-                .collect();
-                view! {
-                    <span class="row-figures">{parts.join(", ")}</span>
-                    <Sparkline values=s.cpu_hour />
-                }
-            })
+        })
+    });
+    let hour = Memo::new(move |_| {
+        figures.with(|n| project.with_value(|p| find(n, p).map(|s| s.cpu_hour.clone())))
+    });
+
+    view! {
+        <Show when=move || now.with(Option::is_some)>
+            <span class="row-figures">{move || now.get().unwrap_or_default()}</span>
+            {move || hour.get().map(|values| view! { <Sparkline values /> })}
+        </Show>
     }
 }
 

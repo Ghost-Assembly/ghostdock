@@ -2,24 +2,18 @@
 //! at once, and removing it.
 
 use leptos::prelude::*;
-use leptos_router::hooks::{use_navigate, use_params_map};
+use leptos_router::hooks::use_navigate;
 use shared::source::{DiscoverRequest, DiscoveredStatus, Discovery, ImportRequest, ImportResult};
 
 use crate::api;
 use crate::confirm::Confirm;
 use crate::screen::Screen;
+use crate::ui::{ErrorNotice, Field, Row, route_id, toggle};
 
 #[component]
 pub fn DiscoverStacks() -> impl IntoView {
     let screen = Screen::new();
-    let params = use_params_map();
-    let repo_id = Memo::new(move |_| {
-        params
-            .get()
-            .get("id")
-            .and_then(|id| id.parse::<i64>().ok())
-            .unwrap_or_default()
-    });
+    let repo_id = route_id();
     let repo_url = RwSignal::new(String::new());
     let credentials = RwSignal::new(Vec::<shared::source::Credential>::new());
     let credential = RwSignal::new(None::<i64>);
@@ -163,13 +157,10 @@ pub fn DiscoverStacks() -> impl IntoView {
 
         <p class="entry-note field-mono">{move || repo_url.get()}</p>
 
-        <Show when=move || error.get().is_some()>
-            <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
-        </Show>
+        <ErrorNotice error />
 
         <form on:submit=look>
-            <label class="field">
-                <span class="field-label">"Branch or tag"</span>
+            <Field label="Branch or tag">
                 <input
                     class="field-input field-mono"
                     type="text"
@@ -179,9 +170,8 @@ pub fn DiscoverStacks() -> impl IntoView {
                     prop:value=move || git_ref.get()
                     on:input=move |ev| git_ref.set(event_target_value(&ev))
                 />
-            </label>
-            <label class="field">
-                <span class="field-label">"Look for"</span>
+            </Field>
+            <Field label="Look for">
                 <input
                     class="field-input field-mono"
                     type="text"
@@ -191,7 +181,7 @@ pub fn DiscoverStacks() -> impl IntoView {
                     prop:value=move || pattern.get()
                     on:input=move |ev| pattern.set(event_target_value(&ev))
                 />
-            </label>
+            </Field>
             <button class="button button-quiet" type="submit" disabled=move || busy.get()>
                 {move || if busy.get() { "Looking" } else { "Look" }}
             </button>
@@ -230,16 +220,9 @@ pub fn DiscoverStacks() -> impl IntoView {
                                 <input
                                     type="checkbox"
                                     disabled=!open
-                                    prop:checked=move || chosen.get().contains(&path)
+                                    prop:checked=move || chosen.with(|list| list.contains(&path))
                                     on:change=move |_| {
-                                        let p = toggle_path.clone();
-                                        chosen.update(|list| {
-                                            if let Some(i) = list.iter().position(|x| *x == p) {
-                                                list.remove(i);
-                                            } else {
-                                                list.push(p);
-                                            }
-                                        });
+                                        chosen.update(|list| toggle(list, toggle_path.clone()));
                                     }
                                 />
                                 <span class="check-name">{f.name.clone()}</span>
@@ -251,10 +234,10 @@ pub fn DiscoverStacks() -> impl IntoView {
                 <button
                     class="button"
                     type="button"
-                    disabled=move || busy.get() || chosen.get().is_empty()
+                    disabled=move || busy.get() || chosen.with(Vec::is_empty)
                     on:click=register
                 >
-                    {move || match chosen.get().len() {
+                    {move || match chosen.with(Vec::len) {
                         0 => "Nothing chosen".to_owned(),
                         1 => "Register 1 stack".to_owned(),
                         n => format!("Register {n} stacks"),
@@ -273,15 +256,12 @@ pub fn DiscoverStacks() -> impl IntoView {
             </h2>
             <ul class="rows">
                 {done.created.into_iter().map(|s| view! {
-                    <li class="row">
-                        <a class="row-link" href=format!("/stacks/{}", s.id)>
-                            <span class="row-bar" data-state="stopped"></span>
-                            <span class="row-name">{s.name.clone()}</span>
-                            <span class="row-detail">
-                                {s.git.map(|g| g.compose_path).unwrap_or_default()}
-                            </span>
-                        </a>
-                    </li>
+                    <Row
+                        state="stopped"
+                        href=format!("/stacks/{}", s.id)
+                        name=s.name
+                        detail=s.git.map(|g| g.compose_path).unwrap_or_default()
+                    />
                 }).collect_view()}
             </ul>
             <Show when={
@@ -300,8 +280,7 @@ pub fn DiscoverStacks() -> impl IntoView {
         })}
 
         <h2 class="group-heading">"Credential"</h2>
-        <label class="field">
-            <span class="field-label">"Reach it with"</span>
+        <Field label="Reach it with">
             <select
                 class="field-input"
                 on:change=move |ev| credential.set(event_target_value(&ev).parse().ok())
@@ -318,7 +297,7 @@ pub fn DiscoverStacks() -> impl IntoView {
                     }
                 }).collect_view()}
             </select>
-        </label>
+        </Field>
         <button class="button button-quiet" type="button" on:click=save_credential>
             "Save credential"
         </button>

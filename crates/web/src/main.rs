@@ -44,8 +44,10 @@ mod socket;
 mod sources;
 mod stack;
 mod stacks;
+mod status;
 mod time;
 mod tokens;
+mod ui;
 mod updates;
 
 fn main() {

@@ -6,6 +6,7 @@ use shared::audit::AuditEntry;
 use crate::api;
 use crate::load::Load;
 use crate::screen::Screen;
+use crate::ui::Row;
 
 #[component]
 pub fn Activity() -> impl IntoView {
@@ -53,16 +54,7 @@ pub fn Activity() -> impl IntoView {
                             };
                             let detail = format!("{} on {}", entry.username, entry.target);
                             let when = crate::time::local(entry.at, "%d %b %H:%M");
-                            view! {
-                                <li class="row">
-                                    <span class="row-link">
-                                        <span class="row-bar" data-state=state></span>
-                                        <span class="row-name">{entry.action}</span>
-                                        <span class="row-detail">{detail}</span>
-                                        <span class="row-count">{when}</span>
-                                    </span>
-                                </li>
-                            }
+                            view! { <Row state name=entry.action detail count=when /> }
                         })
                         .collect_view()}
                 </ul>

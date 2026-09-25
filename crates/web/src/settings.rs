@@ -8,6 +8,7 @@ use crate::api;
 use crate::app::Session;
 use crate::load::Load;
 use crate::screen::Screen;
+use crate::ui::{ErrorNotice, Row};
 
 #[component]
 pub fn Settings(user: User, session: RwSignal<Session>) -> impl IntoView {
@@ -17,13 +18,7 @@ pub fn Settings(user: User, session: RwSignal<Session>) -> impl IntoView {
     let sign_out_error = RwSignal::new(None::<String>);
 
     screen.load(async move {
-        info.set(match api::hosts().await {
-            Ok(hosts) => match hosts.first() {
-                Some(host) => Load::from(api::host_info(host.id).await),
-                None => Load::Failed("GhostDock has no host to show.".to_owned()),
-            },
-            Err(e) => Load::Failed(e.message),
-        });
+        info.set(Load::from(api::host_info().await));
     });
 
     // Signed out only once the server says so: a sign-in screen shown while
@@ -61,27 +56,19 @@ pub fn Settings(user: User, session: RwSignal<Session>) -> impl IntoView {
 
         <h2 class="group-heading">"Account"</h2>
         <ul class="rows">
-            <li class="row">
-                <span class="row-link">
-                    <span class="row-bar" data-state="running"></span>
-                    <span class="row-name">{user.username}</span>
-                    <span class="row-detail">"Signed in"</span>
-                </span>
-            </li>
-            <li class="row">
-                <a class="row-link" href="/accounts">
-                    <span class="row-bar" data-state="running"></span>
-                    <span class="row-name">"Accounts and password"</span>
-                    <span class="row-detail">"Who can sign in, and your own password"</span>
-                </a>
-            </li>
-            <li class="row">
-                <a class="row-link" href="/tokens">
-                    <span class="row-bar" data-state="running"></span>
-                    <span class="row-name">"API tokens"</span>
-                    <span class="row-detail">"Let another program act for you, within limits"</span>
-                </a>
-            </li>
+            <Row state="running" name=user.username detail="Signed in" />
+            <Row
+                state="running"
+                href="/accounts"
+                name="Accounts and password"
+                detail="Who can sign in, and your own password"
+            />
+            <Row
+                state="running"
+                href="/tokens"
+                name="API tokens"
+                detail="Let another program act for you, within limits"
+            />
         </ul>
 
         <h2 class="group-heading">"Host"</h2>
@@ -106,21 +93,13 @@ pub fn Settings(user: User, session: RwSignal<Session>) -> impl IntoView {
                 );
                 view! {
                     <ul class="rows">
-                        <li class="row">
-                            <span class="row-link">
-                                <span
-                                    class="row-bar"
-                                    data-state=if reachable { "running" } else { "unhealthy" }
-                                ></span>
-                                <span class="row-name">{detail.name.clone()}</span>
-                                <span class="row-detail">
-                                    {detail
-                                        .unreachable_reason
-                                        .clone()
-                                        .unwrap_or_else(|| format!("Docker {version}"))}
-                                </span>
-                            </span>
-                        </li>
+                        <Row
+                            state=if reachable { "running" } else { "unhealthy" }
+                            name=detail.name
+                            detail=detail
+                                .unreachable_reason
+                                .unwrap_or_else(|| format!("Docker {version}"))
+                        />
                     </ul>
                     <p class="verdict-count">{counts}</p>
                 }
@@ -130,41 +109,36 @@ pub fn Settings(user: User, session: RwSignal<Session>) -> impl IntoView {
 
         <h2 class="group-heading">"Sources"</h2>
         <ul class="rows">
-            <li class="row">
-                <a class="row-link" href="/sources">
-                    <span class="row-bar" data-state="running"></span>
-                    <span class="row-name">"Repositories and credentials"</span>
-                    <span class="row-detail">"Where Git-backed stacks come from"</span>
-                </a>
-            </li>
+            <Row
+                state="running"
+                href="/sources"
+                name="Repositories and credentials"
+                detail="Where Git-backed stacks come from"
+            />
         </ul>
 
         <h2 class="group-heading">"Maintenance"</h2>
         <ul class="rows">
-            <li class="row">
-                <a class="row-link" href="/cleanup">
-                    <span class="row-bar" data-state="stopped"></span>
-                    <span class="row-name">"Reclaim disk space"</span>
-                    <span class="row-detail">"Images no container is using"</span>
-                </a>
-            </li>
+            <Row
+                state="stopped"
+                href="/cleanup"
+                name="Reclaim disk space"
+                detail="Images no container is using"
+            />
         </ul>
 
         <h2 class="group-heading">"Activity"</h2>
         <ul class="rows">
-            <li class="row">
-                <a class="row-link" href="/activity">
-                    <span class="row-bar" data-state="running"></span>
-                    <span class="row-name">"What has been done"</span>
-                    <span class="row-detail">"Sign-ins, deploys, and changes"</span>
-                </a>
-            </li>
+            <Row
+                state="running"
+                href="/activity"
+                name="What has been done"
+                detail="Sign-ins, deploys, and changes"
+            />
         </ul>
 
         <h2 class="group-heading">"Session"</h2>
-        <Show when=move || sign_out_error.get().is_some()>
-            <p class="notice" role="alert">{move || sign_out_error.get().unwrap_or_default()}</p>
-        </Show>
+        <ErrorNotice error=sign_out_error />
         <button class="button" type="button" disabled=move || signing_out.get() on:click=sign_out>
             {move || if signing_out.get() { "Signing out" } else { "Sign out" }}
         </button>

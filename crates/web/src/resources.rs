@@ -3,15 +3,15 @@
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 use shared::event::ServerEvent;
-use shared::metrics::{
-    ContainerFigures, Now, Range, Reading, SubjectKind, Target, format_bytes, format_cores,
-};
+use shared::metrics::{ContainerFigures, Now, Range, Reading, SubjectKind, Target};
 
 use crate::api;
 use crate::charts::{Chart, Measure};
 use crate::events::use_events;
 use crate::load::Load;
 use crate::screen::Screen;
+use crate::status::usage;
+use crate::ui::{ErrorNotice, Row};
 
 #[component]
 pub fn RangePicker(range: RwSignal<Range>) -> impl IntoView {
@@ -73,27 +73,27 @@ pub fn Charts(
             if range.get_untracked() != Range::Hour {
                 return;
             }
-            let latest = match target.get_untracked() {
+            let latest = target.with_untracked(|target| match target {
                 Target::Subject(SubjectKind::Host, _) => now.host,
                 Target::Subject(SubjectKind::Container, key) => now
                     .containers
                     .iter()
-                    .find(|c| c.key == key)
+                    .find(|c| c.key == *key)
                     .map(|c| c.reading),
                 Target::Subject(SubjectKind::Disk, key) => {
-                    now.disks.iter().find(|c| c.key == key).map(|c| c.reading)
+                    now.disks.iter().find(|c| c.key == *key).map(|c| c.reading)
                 }
                 Target::Subject(SubjectKind::Network, key) => now
                     .networks
                     .iter()
-                    .find(|c| c.key == key)
+                    .find(|c| c.key == *key)
                     .map(|c| c.reading),
                 Target::Stack(project) => now
                     .stacks
                     .iter()
-                    .find(|s| s.project == project)
+                    .find(|s| s.project == *project)
                     .map(|s| s.reading),
-            };
+            });
             if let Some(reading) = latest {
                 points.update(|all| append_live(all, reading, Range::Hour.seconds()));
             }
@@ -101,9 +101,7 @@ pub fn Charts(
     }
 
     view! {
-        <Show when=move || error.get().is_some()>
-            <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
-        </Show>
+        <ErrorNotice error />
         <div class="charts">
             {measures.iter().map(|m| view! {
                 <Chart points=points.into() measure=*m range=range.into() step=step.into() />
@@ -130,13 +128,12 @@ pub fn SizingRows(list: Vec<shared::metrics::Recommendation>) -> impl IntoView {
             {list.into_iter().map(|r| {
                 let detail = r.flags.first().map_or_else(|| r.evidence.clone(), |f| f.text.clone());
                 view! {
-                    <li class="row">
-                        <a class="row-link" href=format!("/containers/{}/resources", r.container)>
-                            <span class="row-bar" data-state=sizing_state(&r)></span>
-                            <span class="row-name">{r.container.clone()}</span>
-                            <span class="row-detail">{detail}</span>
-                        </a>
-                    </li>
+                    <Row
+                        state=sizing_state(&r)
+                        href=format!("/containers/{}/resources", r.container)
+                        name=r.container
+                        detail
+                    />
                 }
             }).collect_view()}
         </ul>
@@ -191,7 +188,7 @@ pub fn ContainerFigureRows(project: Signal<String>, range: RwSignal<Range>) -> i
         events.watch_metrics();
         events.on(move |event| {
             if let ServerEvent::Metrics { now: fresh } = event {
-                now.set(Some(*fresh));
+                now.set(Some((**fresh).clone()));
             }
         });
     }
@@ -216,19 +213,18 @@ pub fn ContainerFigureRows(project: Signal<String>, range: RwSignal<Range>) -> i
                     });
                     let typical = format!("typical {}", pair(f.cpu_typical, f.mem_typical));
                     let peak = format!("peak {}", pair(f.cpu_peak, f.mem_peak));
+                    let state = Signal::derive(move || {
+                        if current.with(Option::is_some) { "running" } else { "stopped" }
+                    });
                     view! {
-                        <li class="row">
-                            <a class="row-link" href=format!("/containers/{}/resources", f.key)>
-                                <span class="row-bar" data-state=move || if current.get().is_some() { "running" } else { "stopped" }></span>
-                                <span class="row-name">{f.key.clone()}</span>
-                                <span class="row-detail">{move || current.get().map_or_else(
-                                    || "not running".to_owned(),
-                                    |r| format!("now {}", pair(r.cpu, r.mem)),
-                                )}</span>
-                                <span class="row-detail">{typical}</span>
-                                <span class="row-detail">{peak}</span>
-                            </a>
-                        </li>
+                        <Row state href=format!("/containers/{}/resources", f.key) name=f.key>
+                            <span class="row-detail">{move || current.get().map_or_else(
+                                || "not running".to_owned(),
+                                |r| format!("now {}", pair(r.cpu, r.mem)),
+                            )}</span>
+                            <span class="row-detail">{typical}</span>
+                            <span class="row-detail">{peak}</span>
+                        </Row>
                     }
                 }).collect_view()}
             </ul>
@@ -240,15 +236,7 @@ pub fn ContainerFigureRows(project: Signal<String>, range: RwSignal<Range>) -> i
 
 /// "0.12 cores, 300 MiB", from whichever figures there are.
 fn pair(cpu: Option<f64>, mem: Option<u64>) -> String {
-    let parts: Vec<String> = [cpu.map(format_cores), mem.map(format_bytes)]
-        .into_iter()
-        .flatten()
-        .collect();
-    if parts.is_empty() {
-        "not measured".to_owned()
-    } else {
-        parts.join(", ")
-    }
+    usage(cpu, mem).unwrap_or_else(|| "not measured".to_owned())
 }
 
 /// Adds a live point to a series, keeping `span` seconds: by time, not by
