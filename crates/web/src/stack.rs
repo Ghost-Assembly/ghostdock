@@ -1,9 +1,12 @@
 //! One stack: what it is doing, what you can do to it, and what happened.
 
+use std::collections::VecDeque;
+use std::sync::Arc;
+
 use leptos::prelude::*;
-use leptos_router::hooks::{use_navigate, use_params_map};
-use shared::container::Container;
-use shared::deployment::{Action, Deployment, DeploymentStatus, RegisteredStack};
+use leptos_router::hooks::use_navigate;
+use shared::container::{Container, Health};
+use shared::deployment::{Deployment, DeploymentStatus, RegisteredStack};
 use shared::event::ServerEvent;
 use shared::metrics::{Range, Target};
 use shared::update::UpdateStatus;
@@ -15,6 +18,8 @@ use crate::events::use_events;
 use crate::load::Load;
 use crate::resources::{Charts, ContainerFigureRows, RangePicker};
 use crate::screen::Screen;
+use crate::status::Outcome;
+use crate::ui::{ErrorNotice, OutputLine, Row, route_id};
 
 /// Lines kept in the live pane.
 ///
@@ -22,17 +27,15 @@ use crate::screen::Screen;
 /// on a phone is a memory leak with a progress bar.
 const MAX_LIVE_LINES: usize = 400;
 
+/// The newest operation's output, oldest first. Each line is numbered as it
+/// arrives, so the pane adds one node per line rather than redrawing all of
+/// them, and shared, so reading the list does not copy the text.
+type Live = VecDeque<(u64, Arc<str>)>;
+
 #[component]
 pub fn StackDetail() -> impl IntoView {
-    let params = use_params_map();
     let navigate = use_navigate();
-    let id = Memo::new(move |_| {
-        params
-            .get()
-            .get("id")
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or_default()
-    });
+    let id = route_id();
 
     let stack = RwSignal::new(None::<RegisteredStack>);
     let resources_range = RwSignal::new(Range::Hour);
@@ -55,8 +58,8 @@ pub fn StackDetail() -> impl IntoView {
     // remember to lower: a finish missed while offline cannot leave the
     // buttons saying "Working" for good.
     let busy = Memo::new(move |_| starting.get() || active.get().is_some());
-    // Output of the operation currently running, newest last.
-    let live = RwSignal::new(Vec::<String>::new());
+    let live = RwSignal::new(Live::new());
+    let next_line = StoredValue::new(0_u64);
     let update = RwSignal::new(None::<UpdateStatus>);
     let update_error = RwSignal::new(None::<String>);
     let auto_apply = RwSignal::new(false);
@@ -65,64 +68,54 @@ pub fn StackDetail() -> impl IntoView {
     let forgetting = RwSignal::new(false);
     let screen = Screen::new();
     // Reads overlap: an event, a reconnect and an action can each start
-    // one. Only the newest may land, or an answer from before a deploy
-    // began would say nothing is running.
+    // one. Only the newest of each kind may land, or an answer from before
+    // a deploy began would say nothing is running. Each kind counts its
+    // own, since a container event re-reads only some of them and must not
+    // cancel the rest of a read that a deploy ending has just asked for.
     let latest = StoredValue::new(0_u64);
+    let latest_containers = StoredValue::new(0_u64);
+    let latest_history = StoredValue::new(0_u64);
     // The newest operation heard to have finished. A quick one can finish
     // before the answer to starting it arrives, and must not then be
     // followed as if it were still running.
     let finished = StoredValue::new(0_i64);
 
-    // Reads for display: dropped if this screen is left mid-way.
-    let refresh = move || {
-        let mine = latest.get_value() + 1;
-        latest.set_value(mine);
-        let current = move || latest.try_get_value() == Some(mine);
+    // Only this stack's containers, which need the stack's name to find.
+    // There is no per-stack route for them; the host's plain list is the
+    // smallest read that has them, without working out every other stack.
+    let read_containers = move || {
+        let mine = latest_containers.get_value() + 1;
+        latest_containers.set_value(mine);
+        let Some(slug) = stack.with_untracked(|s| s.as_ref().map(|s| s.slug.clone())) else {
+            return;
+        };
+        screen.load(async move {
+            let answer = api::containers().await;
+            if latest_containers.try_get_value() != Some(mine) {
+                return;
+            }
+            containers.set(match answer {
+                Ok(all) => {
+                    let mut own: Vec<Container> = all
+                        .into_iter()
+                        .filter(|c| c.compose.as_ref().is_some_and(|m| m.project == slug))
+                        .collect();
+                    own.sort_by(|a, b| a.name.cmp(&b.name));
+                    Load::Ready(own)
+                }
+                Err(e) => Load::Failed(e.message),
+            });
+        });
+    };
+
+    // What has run, and so whether anything is running now.
+    let read_history = move || {
+        let mine = latest_history.get_value() + 1;
+        latest_history.set_value(mine);
         let stack_id = id.get_untracked();
         screen.load(async move {
-            let found = api::stack(stack_id).await;
-            if !current() {
-                return;
-            }
-            match found {
-                Ok(s) => {
-                    stack.set(Some(s));
-                    load_error.set(None);
-                }
-                Err(e) => load_error.set(Some(e.message)),
-            }
-
-            let board = api::stacks(1).await;
-            if !current() {
-                return;
-            }
-            // Without the stack there is no telling which row is its own.
-            if let Some(slug) = stack.get_untracked().map(|s| s.slug) {
-                containers.set(match board {
-                    Ok(board) => Load::Ready(
-                        board
-                            .into_iter()
-                            .find(|s| s.project == slug)
-                            .map(|s| s.containers)
-                            .unwrap_or_default(),
-                    ),
-                    Err(e) => Load::Failed(e.message),
-                });
-            }
-
-            let updates = api::updates(1).await;
-            if !current() {
-                return;
-            }
-            if let Ok(list) = updates
-                && let Some(mine) = list.into_iter().find(|u| u.stack.id == stack_id)
-            {
-                auto_apply.set(mine.auto_apply);
-                update.set(Some(mine.status));
-            }
-
             let deployments = api::deployments(stack_id).await;
-            if !current() {
+            if latest_history.try_get_value() != Some(mine) {
                 return;
             }
             match deployments {
@@ -142,20 +135,68 @@ pub fn StackDetail() -> impl IntoView {
         });
     };
 
+    // Reads for display: dropped if this screen is left mid-way.
+    let refresh = move || {
+        let mine = latest.get_value() + 1;
+        latest.set_value(mine);
+        let current = move || latest.try_get_value() == Some(mine);
+        let stack_id = id.get_untracked();
+        read_history();
+        screen.load(async move {
+            let found = api::stack(stack_id).await;
+            if !current() {
+                return;
+            }
+            match found {
+                Ok(s) => {
+                    stack.set(Some(s));
+                    load_error.set(None);
+                }
+                Err(e) => load_error.set(Some(e.message)),
+            }
+            // Without the stack there is no telling which are its own.
+            read_containers();
+
+            // Every stack's status comes together; there is no route for
+            // one. Read here, on arrival and after a deploy, and not on
+            // every container event, since those do not change it.
+            let updates = api::updates().await;
+            if !current() {
+                return;
+            }
+            if let Ok(list) = updates
+                && let Some(mine) = list.into_iter().find(|u| u.stack.id == stack_id)
+            {
+                auto_apply.set(mine.auto_apply);
+                update.set(Some(mine.status));
+            }
+        });
+    };
+
     Effect::new(move |_| {
         let _ = id.get();
         refresh();
     });
 
+    let clear_live = move || live.update(VecDeque::clear);
+
     // Fold server events into this view's state, one callback per message.
     if let Some(events) = use_events() {
-        let reload = screen.coalesce(std::time::Duration::from_millis(400), refresh);
+        // A container changing does not change the stack or its update
+        // status, so only the containers are read again, and the history:
+        // an ending missed while connected would otherwise leave the
+        // buttons saying "Working" until the next deploy.
+        let reload = screen.coalesce(std::time::Duration::from_millis(400), move || {
+            read_containers();
+            read_history();
+        });
         events.on_reconnect(refresh);
         events.on(move |event| match event {
             // One of this stack's containers changed, whoever caused it.
             ServerEvent::ContainerChanged { change }
-                if change.project.is_some()
-                    && change.project == stack.get_untracked().map(|s| s.slug) =>
+                if change.project.as_deref().is_some_and(|project| {
+                    stack.with_untracked(|s| s.as_ref().is_some_and(|s| s.slug == project))
+                }) =>
             {
                 reload();
             }
@@ -163,9 +204,9 @@ pub fn StackDetail() -> impl IntoView {
                 stack_id,
                 deployment_id,
                 ..
-            } if stack_id == id.get_untracked() => {
-                active.set(Some(deployment_id));
-                live.set(Vec::new());
+            } if *stack_id == id.get_untracked() => {
+                active.set(Some(*deployment_id));
+                clear_live();
                 // Also drops any read already under way, which may have
                 // been answered before this began.
                 refresh();
@@ -173,11 +214,13 @@ pub fn StackDetail() -> impl IntoView {
             ServerEvent::DeploymentOutput {
                 deployment_id,
                 line,
-            } if Some(deployment_id) == active.get_untracked() => {
+            } if Some(*deployment_id) == active.get_untracked() => {
+                let seq = next_line.get_value();
+                next_line.set_value(seq + 1);
                 live.update(|lines| {
-                    lines.push(line);
+                    lines.push_back((seq, Arc::from(line.as_str())));
                     if lines.len() > MAX_LIVE_LINES {
-                        lines.remove(0);
+                        lines.pop_front();
                     }
                 });
             }
@@ -200,9 +243,9 @@ pub fn StackDetail() -> impl IntoView {
         }
         starting.set(true);
         error.set(None);
-        live.set(Vec::new());
+        clear_live();
         // A read already under way may be answered from before this began.
-        latest.set_value(latest.get_value() + 1);
+        latest_history.set_value(latest_history.get_value() + 1);
         // The operation runs on the server whether or not anyone stays here.
         screen.act(api::act(id.get_untracked(), action), move |result| {
             match result {
@@ -269,20 +312,18 @@ pub fn StackDetail() -> impl IntoView {
         );
     };
 
+    let from_git = move || stack.with(|s| s.as_ref().map(|s| s.git.is_some()));
+
     view! {
         <header class="topbar">
             <h1 class="wordmark">
-                {move || stack.get().map_or_else(|| "Stack".to_owned(), |s| s.name)}
+                {move || stack.with(|s| s.as_ref().map_or_else(|| "Stack".to_owned(), |s| s.name.clone()))}
             </h1>
             <a class="topbar-link" href="/">"Back"</a>
         </header>
 
-        <Show when=move || load_error.get().is_some()>
-            <p class="notice" role="alert">{move || load_error.get().unwrap_or_default()}</p>
-        </Show>
-        <Show when=move || error.get().is_some()>
-            <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
-        </Show>
+        <ErrorNotice error=load_error />
+        <ErrorNotice error />
 
         // Two panes where there is room: what is happening on the left,
         // how it is set up on the right. One column, in this order, on a phone.
@@ -302,10 +343,12 @@ pub fn StackDetail() -> impl IntoView {
             </button>
         </div>
 
-        <Show when=move || !live.get().is_empty()>
+        <Show when=move || live.with(|l| !l.is_empty())>
             <h2 class="group-heading">"Output"</h2>
             <pre class="log" aria-live="polite">
-                {move || live.get().join("\n")}
+                <For each=move || live.get() key=|(seq, _)| *seq let:line>
+                    <OutputLine text=line.1.to_string() />
+                </For>
             </pre>
         </Show>
 
@@ -358,11 +401,9 @@ pub fn StackDetail() -> impl IntoView {
         </div>
         <aside class="detail-side">
         <h2 class="group-heading">"Updates"</h2>
-        <p class="entry-note">{move || update_summary(update.get().as_ref())}
+        <p class="entry-note">{move || update.with(|u| update_summary(u.as_ref()))}
         </p>
-        <Show when=move || update_error.get().is_some()>
-            <p class="notice" role="alert">{move || update_error.get().unwrap_or_default()}</p>
-        </Show>
+        <ErrorNotice error=update_error />
         <div class="actions actions-pair">
             <button
                 class="button button-quiet"
@@ -387,27 +428,23 @@ pub fn StackDetail() -> impl IntoView {
         </p>
 
         <h2 class="group-heading">"Source"</h2>
-        {move || match stack.get().and_then(|s| s.git) {
+        {move || match stack.with(|s| s.as_ref().and_then(|s| s.git.clone())) {
             None => view! {
                 <p class="entry-note">"A compose file kept in GhostDock."</p>
             }
             .into_any(),
             Some(git) => {
-                let commit = git.last_commit.clone().map_or_else(
+                let commit = git.last_commit.as_deref().map_or_else(
                     || "never deployed".to_owned(),
-                    |sha| format!("last deployed {}", shared::short(&sha, 12)),
+                    |sha| format!("last deployed {}", shared::short(sha, 12)),
                 );
                 view! {
                     <ul class="rows">
-                        <li class="row">
-                            <span class="row-link">
-                                <span class="row-bar" data-state="running"></span>
-                                <span class="row-name">{git.repo_url.clone()}</span>
-                                <span class="row-detail">
-                                    {format!("{} on {}", git.compose_path, git.git_ref)}
-                                </span>
-                            </span>
-                        </li>
+                        <Row
+                            state="running"
+                            name=git.repo_url
+                            detail=format!("{} on {}", git.compose_path, git.git_ref)
+                        />
                     </ul>
                     <p class="entry-note">{commit}</p>
                 }
@@ -421,12 +458,12 @@ pub fn StackDetail() -> impl IntoView {
         </a>
 
         <h2 class="group-heading">"Definition"</h2>
-        <Show when=move || stack.get().is_some_and(|s| s.git.is_none())>
+        <Show when=move || from_git() == Some(false)>
             <a class="button button-quiet" href=move || format!("/stacks/{}/edit", id.get())>
                 "Edit compose file"
             </a>
         </Show>
-        <Show when=move || stack.get().is_some_and(|s| s.git.is_some())>
+        <Show when=move || from_git() == Some(true)>
             <p class="entry-note">
                 "The compose file lives in the repository. Change it there and deploy."
             </p>
@@ -468,34 +505,28 @@ fn ContainerRows(containers: Vec<Container>) -> impl IntoView {
             {containers
                 .into_iter()
                 .map(|container| {
-                    let state = match container.state {
-                        shared::container::ContainerState::Running
-                        | shared::container::ContainerState::Restarting => "running",
-                        _ => "stopped",
-                    };
-                    let state = if container.health
-                        == Some(shared::container::Health::Unhealthy)
+                    let state = if container.health == Some(Health::Unhealthy)
                         && container.state.is_running()
                     {
                         "unhealthy"
+                    } else if container.state.is_running() {
+                        "running"
                     } else {
-                        state
+                        "stopped"
                     };
-                    let detail = container.status.clone();
-                    let href = format!("/containers/{}/logs", container.id);
-                    let shell_href = format!("/containers/{}/shell", container.id);
-                    let resources_href = format!("/containers/{}/resources", container.name);
+                    let asides = vec![
+                        (format!("/containers/{}/shell", container.id), "Shell"),
+                        (format!("/containers/{}/resources", container.name), "Resources"),
+                    ];
                     view! {
-                        <li class="row">
-                            <a class="row-link" href=href>
-                                <span class="row-bar" data-state=state></span>
-                                <span class="row-name">{container.name.clone()}</span>
-                                <span class="row-detail">{detail}</span>
-                                <span class="row-count">"Logs"</span>
-                            </a>
-                            <a class="row-aside" href=shell_href>"Shell"</a>
-                            <a class="row-aside" href=resources_href>"Resources"</a>
-                        </li>
+                        <Row
+                            state
+                            href=format!("/containers/{}/logs", container.id)
+                            name=container.name
+                            detail=container.status
+                            count="Logs"
+                            asides
+                        />
                     }
                 })
                 .collect_view()}
@@ -510,42 +541,19 @@ fn HistoryRows(deployments: Vec<Deployment>) -> impl IntoView {
             {deployments
                 .into_iter()
                 .map(|d| {
-                    let state = match d.status {
-                        DeploymentStatus::Succeeded => "running",
-                        DeploymentStatus::Failed => "unhealthy",
-                        DeploymentStatus::Running => "degraded",
-                    };
-                    let outcome = match d.status {
-                        DeploymentStatus::Succeeded => "succeeded".to_owned(),
-                        DeploymentStatus::Running => "running now".to_owned(),
-                        DeploymentStatus::Failed => d
-                            .exit_code
-                            .map_or_else(|| "failed".to_owned(), |c| format!("failed (exit {c})")),
-                    };
-                    let when = crate::time::local(d.started_at, "%d %b %H:%M");
-                    let href = format!("/deployments/{}", d.id);
+                    let outcome = Outcome::of(&d);
                     view! {
-                        <li class="row">
-                            <a class="row-link" href=href>
-                                <span class="row-bar" data-state=state></span>
-                                <span class="row-name">{action_label(d.action)}</span>
-                                <span class="row-detail">{outcome}</span>
-                                <span class="row-count">{when}</span>
-                            </a>
-                        </li>
+                        <Row
+                            state=outcome.state
+                            href=format!("/deployments/{}", d.id)
+                            name=d.action.verb()
+                            detail=outcome.word
+                            count=crate::time::local(d.started_at, "%d %b %H:%M")
+                        />
                     }
                 })
                 .collect_view()}
         </ul>
-    }
-}
-
-fn action_label(action: Action) -> &'static str {
-    match action {
-        Action::Deploy => "Deploy",
-        Action::Stop => "Stop",
-        Action::Restart => "Restart",
-        Action::Remove => "Take down",
     }
 }
 

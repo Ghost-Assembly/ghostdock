@@ -6,6 +6,7 @@ use shared::source::{NewGitStack, Repo};
 
 use crate::api;
 use crate::screen::Screen;
+use crate::ui::{ErrorNotice, Field};
 
 #[component]
 pub fn NewGitStackForm() -> impl IntoView {
@@ -30,9 +31,7 @@ pub fn NewGitStackForm() -> impl IntoView {
             <a class="topbar-link" href="/">"Cancel"</a>
         </header>
 
-        <Show when=move || load_error.get().is_some()>
-            <p class="notice" role="alert">{move || load_error.get().unwrap_or_default()}</p>
-        </Show>
+        <ErrorNotice error=load_error />
 
         {move || {
             if !loaded.get() {
@@ -90,23 +89,23 @@ fn Fields(repos: Vec<Repo>) -> impl IntoView {
             compose_path: compose_path.get(),
         };
         let navigate = navigate.clone();
-        screen.act(api_create(new), move |result| match result {
-            Ok(created) => navigate(&format!("/stacks/{}", created.id), Default::default()),
-            Err(e) => {
-                error.set(Some(e.message));
-                busy.set(false);
-            }
-        });
+        screen.act(
+            async move { api::create_git_stack(&new).await },
+            move |result| match result {
+                Ok(created) => navigate(&format!("/stacks/{}", created.id), Default::default()),
+                Err(e) => {
+                    error.set(Some(e.message));
+                    busy.set(false);
+                }
+            },
+        );
     };
 
     view! {
         <form on:submit=submit>
-            <Show when=move || error.get().is_some()>
-                <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
-            </Show>
+            <ErrorNotice error />
 
-            <label class="field">
-                <span class="field-label">"Name"</span>
+            <Field label="Name">
                 <input
                     class="field-input"
                     type="text"
@@ -114,10 +113,9 @@ fn Fields(repos: Vec<Repo>) -> impl IntoView {
                     prop:value=move || name.get()
                     on:input=move |ev| name.set(event_target_value(&ev))
                 />
-            </label>
+            </Field>
 
-            <label class="field">
-                <span class="field-label">"Repository"</span>
+            <Field label="Repository">
                 <select
                     class="field-input"
                     prop:value=move || repo_id.get()
@@ -128,10 +126,9 @@ fn Fields(repos: Vec<Repo>) -> impl IntoView {
                         .map(|r| view! { <option value=r.id.to_string()>{r.url}</option> })
                         .collect_view()}
                 </select>
-            </label>
+            </Field>
 
-            <label class="field">
-                <span class="field-label">"Branch or tag"</span>
+            <Field label="Branch or tag">
                 <input
                     class="field-input field-mono"
                     type="text"
@@ -141,10 +138,9 @@ fn Fields(repos: Vec<Repo>) -> impl IntoView {
                     prop:value=move || git_ref.get()
                     on:input=move |ev| git_ref.set(event_target_value(&ev))
                 />
-            </label>
+            </Field>
 
-            <label class="field">
-                <span class="field-label">"Compose file in the repository"</span>
+            <Field label="Compose file in the repository">
                 <input
                     class="field-input field-mono"
                     type="text"
@@ -155,7 +151,7 @@ fn Fields(repos: Vec<Repo>) -> impl IntoView {
                     prop:value=move || compose_path.get()
                     on:input=move |ev| compose_path.set(event_target_value(&ev))
                 />
-            </label>
+            </Field>
 
             <button class="button" type="submit" disabled=move || busy.get()>
                 {move || if busy.get() { "Saving" } else { "Save stack" }}
@@ -165,10 +161,4 @@ fn Fields(repos: Vec<Repo>) -> impl IntoView {
             </p>
         </form>
     }
-}
-
-async fn api_create(
-    new: shared::source::NewGitStack,
-) -> api::Result<shared::deployment::RegisteredStack> {
-    api::create_git_stack(1, &new).await
 }

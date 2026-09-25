@@ -19,6 +19,11 @@
 //! whatever reactive block happens to be current when a task starts. A block
 //! re-renders as data changes; tying a task to it would cancel the task on
 //! an ordinary update and leave a button stuck saying "Working".
+//!
+//! It holds its screen weakly. The handle lives in the screen's own arena,
+//! so a strong reference would keep the screen alive forever: its cleanups
+//! would never run, leaving its sockets open and its event handlers called
+//! long after it had gone.
 
 use std::future::Future;
 use std::time::Duration;
@@ -27,7 +32,7 @@ use leptos::prelude::*;
 
 #[derive(Clone, Copy)]
 pub struct Screen {
-    owner: StoredValue<Owner>,
+    owner: StoredValue<WeakOwner>,
 }
 
 impl Screen {
@@ -35,12 +40,12 @@ impl Screen {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            owner: StoredValue::new(Owner::current().unwrap_or_default()),
+            owner: StoredValue::new(Owner::current().unwrap_or_default().downgrade()),
         }
     }
 
     fn owner(self) -> Option<Owner> {
-        self.owner.try_get_value()
+        self.owner.try_get_value()?.upgrade()
     }
 
     /// Runs `fut` while the screen exists; drops it when the screen goes.
@@ -116,5 +121,29 @@ impl Screen {
 impl Default for Screen {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::*;
+
+    #[test]
+    fn a_screen_does_not_keep_itself_alive() {
+        let cleaned = Arc::new(AtomicBool::new(false));
+        let owner = Owner::new();
+        let flag = Arc::clone(&cleaned);
+        owner.with(|| {
+            let _screen = Screen::new();
+            on_cleanup(move || flag.store(true, Ordering::SeqCst));
+        });
+        drop(owner);
+        assert!(
+            cleaned.load(Ordering::SeqCst),
+            "leaving a screen must run its cleanups, or its sockets and handlers outlive it"
+        );
     }
 }

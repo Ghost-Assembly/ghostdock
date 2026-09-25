@@ -10,6 +10,7 @@ use shared::auth::Credentials;
 use crate::api;
 use crate::app::Session;
 use crate::screen::Screen;
+use crate::ui::{ErrorNotice, Field};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum EntryMode {
@@ -86,12 +87,9 @@ pub fn Entry(mode: EntryMode, session: RwSignal<Session>) -> impl IntoView {
             </div>
 
             <form on:submit=submit>
-                <Show when=move || error.get().is_some()>
-                    <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
-                </Show>
+                <ErrorNotice error />
 
-                <label class="field">
-                    <span class="field-label">"Username"</span>
+                <Field label="Username">
                     <input
                         class="field-input"
                         type="text"
@@ -102,10 +100,9 @@ pub fn Entry(mode: EntryMode, session: RwSignal<Session>) -> impl IntoView {
                         prop:value=move || username.get()
                         on:input=move |ev| username.set(event_target_value(&ev))
                     />
-                </label>
+                </Field>
 
-                <label class="field">
-                    <span class="field-label">"Password"</span>
+                <Field label="Password">
                     <input
                         class="field-input"
                         type="password"
@@ -117,7 +114,7 @@ pub fn Entry(mode: EntryMode, session: RwSignal<Session>) -> impl IntoView {
                         prop:value=move || password.get()
                         on:input=move |ev| password.set(event_target_value(&ev))
                     />
-                </label>
+                </Field>
 
                 <button class="button" type="submit" disabled=move || busy.get()>
                     {move || if busy.get() { "Working" } else { action }}

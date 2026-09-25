@@ -7,6 +7,7 @@ use crate::api;
 use crate::confirm::Confirm;
 use crate::load::Load;
 use crate::screen::Screen;
+use crate::ui::{ErrorNotice, Field, Row};
 
 #[component]
 pub fn Accounts() -> impl IntoView {
@@ -27,9 +28,7 @@ pub fn Accounts() -> impl IntoView {
             <a class="topbar-link" href="/settings">"Back"</a>
         </header>
 
-        <Show when=move || error.get().is_some()>
-            <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
-        </Show>
+        <ErrorNotice error />
 
         <h2 class="group-heading">"Who can sign in"</h2>
         {move || match accounts.get() {
@@ -95,23 +94,19 @@ fn AccountRows(
                             },
                         );
                     });
+                    let you = account.you;
                     view! {
-                        <li class="row">
-                            <span class="row-link">
-                                <span class="row-bar" data-state="running"></span>
-                                <span class="row-name">{account.username.clone()}</span>
-                                <span class="row-detail">{detail}</span>
-                                <Show when=move || !account.you>
-                                    <Confirm
-                                        label="Remove"
-                                        confirm="Remove account"
-                                        row=true
-                                        disabled=Signal::derive(move || removing.get())
-                                        on_confirm=remove
-                                    />
-                                </Show>
-                            </span>
-                        </li>
+                        <Row state="running" name=account.username detail>
+                            <Show when=move || !you>
+                                <Confirm
+                                    label="Remove"
+                                    confirm="Remove account"
+                                    row=true
+                                    disabled=Signal::derive(move || removing.get())
+                                    on_confirm=remove
+                                />
+                            </Show>
+                        </Row>
                     }
                 })
                 .collect_view()}
@@ -156,11 +151,8 @@ fn NewAccountForm(on_added: impl Fn() + Copy + Send + Sync + 'static) -> impl In
 
     view! {
         <form on:submit=submit>
-            <Show when=move || error.get().is_some()>
-                <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
-            </Show>
-            <label class="field">
-                <span class="field-label">"Username"</span>
+            <ErrorNotice error />
+            <Field label="Username">
                 <input
                     class="field-input"
                     type="text"
@@ -171,9 +163,8 @@ fn NewAccountForm(on_added: impl Fn() + Copy + Send + Sync + 'static) -> impl In
                     prop:value=move || username.get()
                     on:input=move |ev| username.set(event_target_value(&ev))
                 />
-            </label>
-            <label class="field">
-                <span class="field-label">"Password"</span>
+            </Field>
+            <Field label="Password">
                 <input
                     class="field-input"
                     type="password"
@@ -183,7 +174,7 @@ fn NewAccountForm(on_added: impl Fn() + Copy + Send + Sync + 'static) -> impl In
                     prop:value=move || password.get()
                     on:input=move |ev| password.set(event_target_value(&ev))
                 />
-            </label>
+            </Field>
             <button class="button button-quiet" type="submit" disabled=move || busy.get()>
                 {move || if busy.get() { "Adding" } else { "Add account" }}
             </button>
@@ -231,11 +222,8 @@ fn PasswordForm() -> impl IntoView {
 
     view! {
         <form on:submit=submit>
-            <Show when=move || error.get().is_some()>
-                <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
-            </Show>
-            <label class="field">
-                <span class="field-label">"Current password"</span>
+            <ErrorNotice error />
+            <Field label="Current password">
                 <input
                     class="field-input"
                     type="password"
@@ -244,9 +232,8 @@ fn PasswordForm() -> impl IntoView {
                     prop:value=move || current.get()
                     on:input=move |ev| current.set(event_target_value(&ev))
                 />
-            </label>
-            <label class="field">
-                <span class="field-label">"New password"</span>
+            </Field>
+            <Field label="New password">
                 <input
                     class="field-input"
                     type="password"
@@ -256,7 +243,7 @@ fn PasswordForm() -> impl IntoView {
                     prop:value=move || new.get()
                     on:input=move |ev| new.set(event_target_value(&ev))
                 />
-            </label>
+            </Field>
             <button class="button button-quiet" type="submit" disabled=move || busy.get()>
                 {move || if busy.get() { "Changing" } else { "Change password" }}
             </button>

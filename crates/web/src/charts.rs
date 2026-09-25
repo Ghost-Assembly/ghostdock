@@ -6,6 +6,8 @@
 //! for. Where nothing was measured, the line breaks rather than falling to
 //! zero, because a stopped container is not an idle one.
 
+use std::sync::Arc;
+
 use leptos::prelude::*;
 use shared::metrics::{Range, Reading, format_bytes, format_cores, format_rate};
 
@@ -213,6 +215,22 @@ fn reading_at(points: &[Reading], picked: Option<i64>) -> Option<&Reading> {
         .or_else(|| points.last())
 }
 
+/// Where a chart's lines fall, worked out once per change of its points.
+/// The paths are shared rather than copied, since several parts of the
+/// chart read this on every tick.
+#[derive(Clone, PartialEq)]
+struct Geometry {
+    area: Arc<str>,
+    peak: Arc<str>,
+    /// Height of the limit line, where there is a limit.
+    limit: Option<f64>,
+    /// The top of the scale.
+    max: f64,
+    t0: i64,
+    t1: i64,
+    near_limit: bool,
+}
+
 /// One measure over a range. Tap or hover to read a moment's value.
 #[component]
 pub fn Chart(
@@ -224,39 +242,43 @@ pub fn Chart(
     // The time of the point under the pointer, if one is.
     let picked = RwSignal::new(None::<i64>);
     let geometry = Memo::new(move |_| {
-        let pts = points.get();
-        let (t0, t1) = span(&pts, range.get(), chrono::Utc::now().timestamp());
-        let avg: Vec<(i64, Option<f64>)> = pts.iter().map(|r| (r.t, measure.values(r).0)).collect();
-        let peak: Vec<(i64, Option<f64>)> =
-            pts.iter().map(|r| (r.t, measure.values(r).1)).collect();
-        let limit = pts.iter().rev().find_map(|r| measure.values(r).2);
-        let top = pts
-            .iter()
-            .filter_map(|r| {
-                let (a, p, _) = measure.values(r);
-                p.or(a)
-            })
-            .fold(limit.unwrap_or(0.0), f64::max);
-        let max = measure.ceiling(top);
-        // Points further apart than two steps (plus thinning) are a gap.
-        let gap = (step.get() * 2).max((t1 - t0) / 150);
-        let latest = pts.iter().rev().find_map(|r| measure.values(r).0);
-        let near_limit = matches!((latest, limit), (Some(v), Some(l)) if l > 0.0 && v > 0.9 * l);
-        (
-            area(&avg, t0, t1, max, gap),
-            path(&peak, t0, t1, max, gap),
-            limit.map(|l| H - (l / max).clamp(0.0, 1.0) * H),
-            max,
-            t0,
-            t1,
-            latest,
-            near_limit,
-        )
+        let (range, step) = (range.get(), step.get());
+        points.with(|pts| {
+            let (t0, t1) = span(pts, range, chrono::Utc::now().timestamp());
+            let avg: Vec<(i64, Option<f64>)> =
+                pts.iter().map(|r| (r.t, measure.values(r).0)).collect();
+            let peak: Vec<(i64, Option<f64>)> =
+                pts.iter().map(|r| (r.t, measure.values(r).1)).collect();
+            let limit = pts.iter().rev().find_map(|r| measure.values(r).2);
+            let top = pts
+                .iter()
+                .filter_map(|r| {
+                    let (a, p, _) = measure.values(r);
+                    p.or(a)
+                })
+                .fold(limit.unwrap_or(0.0), f64::max);
+            let max = measure.ceiling(top);
+            // Points further apart than two steps (plus thinning) are a gap.
+            let gap = (step * 2).max((t1 - t0) / 150);
+            let latest = pts.iter().rev().find_map(|r| measure.values(r).0);
+            Geometry {
+                area: area(&avg, t0, t1, max, gap).into(),
+                peak: path(&peak, t0, t1, max, gap).into(),
+                limit: limit.map(|l| H - (l / max).clamp(0.0, 1.0) * H),
+                max,
+                t0,
+                t1,
+                near_limit: matches!(
+                    (latest, limit),
+                    (Some(v), Some(l)) if l > 0.0 && v > 0.9 * l
+                ),
+            }
+        })
     });
 
     let readout = move || {
-        let pts = points.get();
-        match reading_at(&pts, picked.get()) {
+        let picked = picked.get();
+        points.with(|pts| match reading_at(pts, picked) {
             Some(r) => {
                 let (avg, peak, _) = measure.values(r);
                 let value = avg.map_or_else(|| "nothing running".to_owned(), |v| measure.format(v));
@@ -267,7 +289,7 @@ pub fn Chart(
                 format!("{value}{peak}")
             }
             None => "no figures yet".to_owned(),
-        }
+        })
     };
 
     let on_move = move |ev: leptos::ev::PointerEvent| {
@@ -282,16 +304,19 @@ pub fn Chart(
             return;
         }
         let frac = ((f64::from(ev.client_x()) - rect.left()) / rect.width()).clamp(0.0, 1.0);
-        let (.., t0, t1, _, _) = geometry.get_untracked();
+        let (t0, t1) = geometry.with_untracked(|g| (g.t0, g.t1));
         #[allow(clippy::cast_possible_truncation)]
         let t = t0 + ((t1 - t0) as f64 * frac) as i64;
-        let pts = points.get_untracked();
-        let nearest = pts.iter().min_by_key(|r| (r.t - t).abs()).map(|r| r.t);
-        picked.set(nearest);
+        let nearest =
+            points.with_untracked(|pts| pts.iter().min_by_key(|r| (r.t - t).abs()).map(|r| r.t));
+        // Moving within the same point changes nothing, so says nothing.
+        if picked.get_untracked() != nearest {
+            picked.set(nearest);
+        }
     };
 
     view! {
-        <figure class="chart" data-state=move || if geometry.get().7 { "degraded" } else { "" }>
+        <figure class="chart" data-state=move || if geometry.with(|g| g.near_limit) { "degraded" } else { "" }>
             <figcaption class="chart-head">
                 <span class="chart-title">{measure.title()}</span>
                 <span class="chart-value">{readout}</span>
@@ -301,17 +326,17 @@ pub fn Chart(
                     aria-label=measure.title()
                     on:pointermove=on_move
                     on:pointerleave=move |_| picked.set(None)>
-                    <path class="chart-area" d=move || geometry.get().0 />
-                    <path class="chart-peak" d=move || geometry.get().1 />
-                    {move || geometry.get().2.map(|y| view! {
+                    <path class="chart-area" d=move || geometry.with(|g| Arc::clone(&g.area)) />
+                    <path class="chart-peak" d=move || geometry.with(|g| Arc::clone(&g.peak)) />
+                    {move || geometry.with(|g| g.limit).map(|y| view! {
                         <line class="chart-limit" x1="0" x2="600" y1=y y2=y />
                     })}
                 </svg>
                 // With nothing measured, a scale and times would only mislead.
                 <Show when=move || points.with(|p| !p.is_empty())>
-                    <span class="chart-axis chart-axis-top">{move || measure.format(geometry.get().3)}</span>
-                    <span class="chart-axis chart-axis-start">{move || time_label(geometry.get().4, range.get())}</span>
-                    <span class="chart-axis chart-axis-end">{move || time_label(geometry.get().5, range.get())}</span>
+                    <span class="chart-axis chart-axis-top">{move || measure.format(geometry.with(|g| g.max))}</span>
+                    <span class="chart-axis chart-axis-start">{move || time_label(geometry.with(|g| g.t0), range.get())}</span>
+                    <span class="chart-axis chart-axis-end">{move || time_label(geometry.with(|g| g.t1), range.get())}</span>
                 </Show>
             </div>
         </figure>
