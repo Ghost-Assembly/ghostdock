@@ -11,6 +11,7 @@
 // scripts run directly by `node` with no build step, and the only types
 // involved belong to Playwright. A compile step here would add a toolchain to
 // the repository for no checking it does not already get.
+import { execFileSync } from 'node:child_process';
 import { chromium, devices } from 'playwright';
 
 const BASE = process.env.GHOSTDOCK_URL ?? 'http://127.0.0.1:18081';
@@ -139,6 +140,29 @@ for (let i = 0; i < 90 && !['succeeded', 'failed'].includes(outcome); i++) {
 }
 console.log('left at once  :', `deploy ${outcome}`);
 if (outcome !== 'succeeded') problems.push(`leaving the screen stopped the deploy: ${outcome}`);
+
+// 6. Busy is what the server says is running. A read that found an
+// operation running, whose ending was then missed, must not leave the
+// buttons saying "Working" once a later read finds nothing running. The
+// first read is made to say so; the container restarting makes it look again.
+let faked = false;
+await page.route('**/api/v1/stacks/*/deployments', async route => {
+  if (faked) return route.continue();
+  faked = true;
+  const response = await route.fetch();
+  const list = await response.json();
+  if (list[0]) list[0].status = 'running';
+  await route.fulfill({ response, json: list });
+});
+await page.goto(`${BASE}${path1}`);
+await page.waitForSelector('button:has-text("Working")', { timeout: 20000 });
+await page.waitForTimeout(1000);
+execFileSync('docker', ['restart', '-t', '0', 'demo-app-web-1'], { stdio: 'ignore' });
+const cleared = await page.waitForSelector('button:has-text("Deploy"):not([disabled])', { timeout: 20000 })
+  .then(() => true, () => false);
+console.log('busy          :', cleared ? 'cleared once nothing was running' : 'STUCK on Working');
+if (!cleared) problems.push('the stack stayed busy after a read found nothing running');
+await page.unroute('**/api/v1/stacks/*/deployments');
 
 const overflow = await page.evaluate(() =>
   document.documentElement.scrollWidth - document.documentElement.clientWidth);

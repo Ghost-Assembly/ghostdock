@@ -6,14 +6,12 @@
 //! will not work, which is the honest trade for a screen that is usable with
 //! a soft keyboard.
 
-use std::sync::{Arc, Mutex};
-
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 use shared::logs::{LogLine, Stream};
-use wasm_bindgen::JsCast;
-use wasm_bindgen::closure::Closure;
-use web_sys::{MessageEvent, WebSocket};
+use web_sys::MessageEvent;
+
+use crate::{api, socket};
 
 /// Lines kept on screen.
 ///
@@ -29,28 +27,30 @@ pub fn Console() -> impl IntoView {
     let lines = RwSignal::new(Vec::<LogLine>::new());
     let command = RwSignal::new(String::new());
     let connected = RwSignal::new(false);
-    // Held so the socket outlives this function and can be written to.
-    let socket: Arc<Mutex<Option<WebSocket>>> = Arc::new(Mutex::new(None));
+    // The shell is this screen's: it closes when the screen goes, and when
+    // the route moves to another container. Left open, it would keep a
+    // shell running on the server that nobody can see.
+    let shell = StoredValue::new_local(None::<socket::Owned>);
+    on_cleanup(move || shell.set_value(None));
 
-    let held = Arc::clone(&socket);
     Effect::new(move |_| {
         let container = id.get();
+        // Whatever the last container said is not this one's.
+        shell.set_value(None);
+        connected.set(false);
+        lines.set(Vec::new());
         if container.is_empty() {
             return;
         }
 
-        let location = web_sys::window().and_then(|w| w.location().host().ok());
-        let Some(host) = location else { return };
-        let secure = web_sys::window()
-            .and_then(|w| w.location().protocol().ok())
-            .is_some_and(|p| p == "https:");
-        let scheme = if secure { "wss" } else { "ws" };
-        let url = format!("{scheme}://{host}/api/v1/hosts/1/containers/{container}/exec");
-
-        match WebSocket::new(&url) {
-            Ok(ws) => {
-                let on_message =
-                    Closure::<dyn FnMut(MessageEvent)>::new(move |ev: MessageEvent| {
+        let url = socket::url(&format!(
+            "/api/v1/hosts/1/containers/{}/exec",
+            api::component(&container)
+        ));
+        match socket::Owned::connect(&url) {
+            Ok(opened) => shell.set_value(Some(
+                opened
+                    .on_message(move |ev: MessageEvent| {
                         let Some(text) = ev.data().as_string() else {
                             return;
                         };
@@ -62,39 +62,22 @@ pub fn Console() -> impl IntoView {
                                 }
                             });
                         }
-                    });
-                ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-                on_message.forget();
-
-                let on_open = Closure::<dyn FnMut()>::new(move || connected.set(true));
-                ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
-                on_open.forget();
-
-                let on_close = Closure::<dyn FnMut()>::new(move || connected.set(false));
-                ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
-                on_close.forget();
-
-                *held
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ws);
-            }
+                    })
+                    .on_open(move || connected.set(true))
+                    .on_close(move |_| connected.set(false)),
+            )),
             Err(e) => leptos::logging::error!("could not open a shell: {e:?}"),
         }
     });
 
-    let sending = Arc::clone(&socket);
     let submit = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default();
         let text = command.get();
         if text.is_empty() {
             return;
         }
-        if let Some(ws) = sending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            && ws.send_with_str(&text).is_ok()
-        {
+        let sent = shell.with_value(|s| s.as_ref().is_some_and(|s| s.send(&text)));
+        if sent {
             // Echoed locally: without a TTY the shell does not echo, so
             // without this the scrollback shows answers with no questions.
             lines.update(|all| {

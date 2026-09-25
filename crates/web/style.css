@@ -158,6 +158,14 @@ body {
   color: var(--ink);
 }
 
+/* The live connection is down. A quiet line, not an alarm: what is on
+ * screen is still what was true a moment ago. */
+.live-paused {
+  margin: 0.5rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--ink-dim);
+}
+
 /* ---- verdict ---------------------------------------------------------- */
 
 /* The hero. One sentence answering "is everything fine?", which is the only
@@ -498,6 +506,19 @@ a.button {
 
 .row-action:hover,
 .row-action:focus-visible {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+/* Armed: the tap that does it, and a way out, where the first tap was. */
+.row-confirm {
+  grid-row: 1 / span 2;
+  grid-column: 3;
+  display: flex;
+  gap: 0.375rem;
+}
+
+.row-action[data-armed] {
   color: var(--bad);
   border-color: var(--bad);
 }

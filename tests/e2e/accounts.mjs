@@ -41,6 +41,9 @@ await signIn(laptop, 'admin', PASSWORD);
 
 const phone = await device();
 await signIn(phone, 'admin', PASSWORD);
+// Left on Settings, away from the board.
+await phone.click('.nav-item:has-text("Settings")');
+await phone.waitForSelector('h1.wordmark:has-text("Settings")');
 
 // 1. Add a second account from Settings.
 await laptop.click('.nav-item:has-text("Settings")');
@@ -73,6 +76,12 @@ await laptop.reload({ waitUntil: 'networkidle' });
 if (!(await laptop.$('h1.wordmark:has-text("Accounts")'))) {
   problems.push('changing the password signed out the device that changed it');
 }
+// Without a reload: whichever screen hears the session has ended goes back
+// to signing in, not only the board.
+await phone.click('a:has-text("What has been done")');
+const fellBack = await phone.waitForSelector('h1.entry-heading', { timeout: 10000 }).then(() => true, () => false);
+console.log('phone activity:', fellBack ? 'back to sign-in' : 'STILL SHOWN');
+if (!fellBack) problems.push('a screen other than the board did not return to sign-in on a 401');
 await phone.reload({ waitUntil: 'networkidle' });
 await phone.waitForSelector('h1.entry-heading', { timeout: 10000 });
 console.log('phone         :', (await phone.textContent('h1.entry-heading')).trim());
@@ -87,7 +96,7 @@ const second = laptop.locator('.row', { has: laptop.locator('.row-name:text("sec
 await second.locator('.row-action').click();
 await laptop.waitForTimeout(300);
 if (!(await laptop.$('.row-name:text("second")'))) problems.push('one tap removed an account');
-await second.locator('.row-action:has-text("Confirm")').click();
+await second.locator('.row-action:has-text("Remove account")').click();
 await laptop.waitForSelector('.row-name:text("second")', { state: 'detached', timeout: 10000 });
 console.log('removed       : second');
 

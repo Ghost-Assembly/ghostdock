@@ -48,6 +48,13 @@ pub fn App() -> impl IntoView {
     // no longer good, so an expiry mid-use shows the sign-in screen rather
     // than an authentication error where the content should be.
     provide_context(session);
+    // Whichever screen hears it first. Only a signed-in session is retired:
+    // a wrong password on the sign-in screen is a 401 too.
+    api::on_unauthenticated(move || {
+        if matches!(session.get_untracked(), Session::SignedIn(_)) {
+            session.set(Session::SignedOut);
+        }
+    });
 
     let screen = Screen::new();
     let check = move || {
@@ -107,11 +114,16 @@ pub fn App() -> impl IntoView {
 fn Shell(user: User, session: RwSignal<Session>) -> impl IntoView {
     // Opened once the viewer is known, so an anonymous page load does not
     // hold a connection the server would only reject.
-    events::provide("/api/v1/events/socket");
+    let paused = events::provide("/api/v1/events/socket").paused();
 
     view! {
         <Router>
             <main class="shell">
+                // Said, because a screen that stops changing looks exactly
+                // like one where nothing is happening.
+                <Show when=move || paused.get()>
+                    <p class="live-paused" role="status">"Live updates paused. Reconnecting."</p>
+                </Show>
                 <Routes fallback=|| {
                     view! { <p class="state-note">"That page does not exist."</p> }
                 }>

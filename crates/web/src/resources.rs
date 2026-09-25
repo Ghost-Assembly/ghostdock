@@ -10,6 +10,7 @@ use shared::metrics::{
 use crate::api;
 use crate::charts::{Chart, Measure};
 use crate::events::use_events;
+use crate::load::Load;
 use crate::screen::Screen;
 
 #[component]
@@ -165,7 +166,7 @@ pub fn SizingAdvice(advice: shared::metrics::Recommendation) -> impl IntoView {
 #[component]
 pub fn ContainerFigureRows(project: Signal<String>, range: RwSignal<Range>) -> impl IntoView {
     let screen = Screen::new();
-    let list = RwSignal::new(Vec::<ContainerFigures>::new());
+    let list = RwSignal::new(Load::<Vec<ContainerFigures>>::Loading);
     let now = RwSignal::new(None::<Now>);
     let latest = StoredValue::new(0_u64);
 
@@ -178,9 +179,7 @@ pub fn ContainerFigureRows(project: Signal<String>, range: RwSignal<Range>) -> i
             if latest.try_get_value() != Some(mine) {
                 return;
             }
-            if let Ok(figures) = answer {
-                list.set(figures);
-            }
+            list.set(Load::from(answer));
         });
     });
     screen.load(async move {
@@ -198,12 +197,19 @@ pub fn ContainerFigureRows(project: Signal<String>, range: RwSignal<Range>) -> i
     }
 
     view! {
-        <Show
-            when=move || list.with(|l| !l.is_empty())
-            fallback=|| view! { <p class="entry-note">"No figures for its containers in this range yet."</p> }
-        >
+        {move || match list.get() {
+            Load::Loading => view! { <p class="entry-note">"Reading figures"</p> }.into_any(),
+            Load::Failed(message) => view! {
+                <p class="entry-note">{format!("Could not read its containers' figures. {message}")}</p>
+            }
+            .into_any(),
+            Load::Ready(figures) if figures.is_empty() => view! {
+                <p class="entry-note">"No figures for its containers in this range yet."</p>
+            }
+            .into_any(),
+            Load::Ready(figures) => view! {
             <ul class="rows rows-figures">
-                {move || list.get().into_iter().map(|f| {
+                {figures.into_iter().map(|f| {
                     let key = f.key.clone();
                     let current = Memo::new(move |_| {
                         now.with(|n| n.as_ref().and_then(|n| n.containers.iter().find(|c| c.key == key).map(|c| c.reading)))
@@ -226,7 +232,9 @@ pub fn ContainerFigureRows(project: Signal<String>, range: RwSignal<Range>) -> i
                     }
                 }).collect_view()}
             </ul>
-        </Show>
+            }
+            .into_any(),
+        }}
     }
 }
 
@@ -263,12 +271,18 @@ pub fn ContainerResources() -> impl IntoView {
     let range = RwSignal::new(Range::Hour);
     let target = Signal::derive(move || Target::Subject(SubjectKind::Container, name.get()));
     let advice = RwSignal::new(None);
+    let advice_error = RwSignal::new(None::<String>);
     // Again when the route moves to another container.
     Effect::new(move |_| {
         let wanted = name.get();
+        advice.set(None);
         screen.load(async move {
-            if let Ok(list) = api::sizing().await {
-                advice.set(list.into_iter().find(|r| r.container == wanted));
+            match api::sizing().await {
+                Ok(list) => {
+                    advice.set(list.into_iter().find(|r| r.container == wanted));
+                    advice_error.set(None);
+                }
+                Err(e) => advice_error.set(Some(e.message)),
             }
         });
     });
@@ -280,6 +294,9 @@ pub fn ContainerResources() -> impl IntoView {
         <RangePicker range />
         <Charts target range measures=&[Measure::Cpu, Measure::Memory, Measure::NetIn, Measure::NetOut, Measure::DiskRead, Measure::DiskWrite] />
         {move || advice.get().map(|a| view! { <SizingAdvice advice=a /> })}
+        {move || advice_error.get().map(|message| view! {
+            <p class="entry-note">{format!("Could not read the sizing advice. {message}")}</p>
+        })}
     }
 }
 

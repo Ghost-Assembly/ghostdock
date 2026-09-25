@@ -10,11 +10,13 @@ use leptos::prelude::*;
 use shared::cleanup::{CleanupPreview, CleanupResult, CleanupScope, StoppedContainer, UnusedImage};
 
 use crate::api;
+use crate::confirm::Confirm;
+use crate::load::Load;
 use crate::screen::Screen;
 
 #[component]
 pub fn Cleanup() -> impl IntoView {
-    let preview = RwSignal::new(None::<CleanupPreview>);
+    let preview = RwSignal::new(Load::<CleanupPreview>::Loading);
     let result = RwSignal::new(None::<(CleanupScope, CleanupResult)>);
     let error = RwSignal::new(None::<String>);
     let screen = Screen::new();
@@ -22,33 +24,38 @@ pub fn Cleanup() -> impl IntoView {
 
     let refresh = move || {
         screen.load(async move {
-            match api::cleanup_preview(1).await {
-                Ok(found) => preview.set(Some(found)),
-                Err(e) => error.set(Some(e.message)),
-            }
+            preview.set(Load::from(api::cleanup_preview(1).await));
         });
     };
     Effect::new(move |_| refresh());
 
-    let run = move |scope: CleanupScope| {
-        move |_| {
-            if busy.get_untracked() {
-                return;
+    // The label a removal button carries: what it will do, or that it is.
+    let label = move |idle: String| {
+        Signal::derive(move || {
+            if busy.get() {
+                "Removing".to_owned()
+            } else {
+                idle.clone()
             }
-            busy.set(true);
-            error.set(None);
-            // Runs to the end on the server even if this screen is left.
-            screen.act(api::run_cleanup(1, scope), move |outcome| {
-                match outcome {
-                    Ok(done) => {
-                        result.set(Some((scope, done)));
-                        refresh();
-                    }
-                    Err(e) => error.set(Some(e.message)),
-                }
-                busy.set(false);
-            });
+        })
+    };
+    let run = move |scope: CleanupScope| {
+        if busy.get_untracked() {
+            return;
         }
+        busy.set(true);
+        error.set(None);
+        // Runs to the end on the server even if this screen is left.
+        screen.act(api::run_cleanup(1, scope), move |outcome| {
+            match outcome {
+                Ok(done) => {
+                    result.set(Some((scope, done)));
+                    refresh();
+                }
+                Err(e) => error.set(Some(e.message)),
+            }
+            busy.set(false);
+        });
     };
 
     view! {
@@ -95,15 +102,22 @@ pub fn Cleanup() -> impl IntoView {
         </Show>
 
         {move || match preview.get() {
-            None => view! { <p class="state-note">"Looking"</p> }.into_any(),
-            Some(found) if found.is_empty() => view! {
+            Load::Loading => view! { <p class="state-note">"Looking"</p> }.into_any(),
+            Load::Failed(message) => view! {
+                <div class="state-note">
+                    <p>"Could not look for anything to reclaim."</p>
+                    <p>{message}</p>
+                </div>
+            }
+            .into_any(),
+            Load::Ready(found) if found.is_empty() => view! {
                 <div class="state-note">
                     <p>"Nothing to reclaim."</p>
                     <p>"Every image is in use, and no stopped container is left over."</p>
                 </div>
             }
             .into_any(),
-            Some(found) => {
+            Load::Ready(found) => {
                 let dangling_bytes = found.dangling_bytes();
                 let unused_bytes = found.unused_bytes();
                 let has_dangling = !found.dangling.is_empty();
@@ -139,18 +153,12 @@ pub fn Cleanup() -> impl IntoView {
                     <Show when=move || has_leftover>
                         <h2 class="group-heading">"Left by stacks that are gone"</h2>
                         <ContainerRows containers=found.leftover.clone() />
-                        <button
-                            class="button button-danger"
-                            type="button"
-                            disabled=move || busy.get()
-                            on:click=run(CleanupScope::Leftover)
-                        >
-                            {move || if busy.get() {
-                                "Removing".to_owned()
-                            } else {
-                                format!("Remove {leftover_count} left over")
-                            }}
-                        </button>
+                        <Confirm
+                            label=label(format!("Remove {leftover_count} left over"))
+                            confirm="Remove them"
+                            disabled=Signal::derive(move || busy.get())
+                            on_confirm=Callback::new(move |()| run(CleanupScope::Leftover))
+                        />
                         <p class="entry-note">
                             "Stopped, from compose projects GhostDock does not manage and that have \
                              nothing running. Their volumes are kept."
@@ -160,18 +168,12 @@ pub fn Cleanup() -> impl IntoView {
                     <Show when=move || has_standalone>
                         <h2 class="group-heading">"Stopped, not from Compose"</h2>
                         <ContainerRows containers=found.standalone.clone() />
-                        <button
-                            class="button button-danger"
-                            type="button"
-                            disabled=move || busy.get()
-                            on:click=run(CleanupScope::Standalone)
-                        >
-                            {move || if busy.get() {
-                                "Removing".to_owned()
-                            } else {
-                                format!("Remove {standalone_count} stopped")
-                            }}
-                        </button>
+                        <Confirm
+                            label=label(format!("Remove {standalone_count} stopped"))
+                            confirm="Remove them"
+                            disabled=Signal::derive(move || busy.get())
+                            on_confirm=Callback::new(move |()| run(CleanupScope::Standalone))
+                        />
                         <p class="entry-note">
                             "Started by hand, with docker run or another tool. Remove them only \
                              if you are done with them; their volumes are kept."
@@ -185,7 +187,7 @@ pub fn Cleanup() -> impl IntoView {
                             class="button button-quiet"
                             type="button"
                             disabled=move || busy.get()
-                            on:click=run(CleanupScope::Dangling)
+                            on:click=move |_| run(CleanupScope::Dangling)
                         >
                             {move || {
                                 if busy.get() {
@@ -203,23 +205,15 @@ pub fn Cleanup() -> impl IntoView {
                     <Show when=move || has_unused>
                         <h2 class="group-heading">"Not used by any container"</h2>
                         <ImageRows images=found.unused.clone() />
-                        <button
-                            class="button button-danger"
-                            type="button"
-                            disabled=move || busy.get()
-                            on:click=run(CleanupScope::AllUnused)
-                        >
-                            {move || {
-                                if busy.get() {
-                                    "Removing".to_owned()
-                                } else {
-                                    format!(
-                                        "Remove everything unused ({})",
-                                        human_size(dangling_bytes + unused_bytes),
-                                    )
-                                }
-                            }}
-                        </button>
+                        <Confirm
+                            label=label(format!(
+                                "Remove everything unused ({})",
+                                human_size(dangling_bytes + unused_bytes),
+                            ))
+                            confirm="Remove them"
+                            disabled=Signal::derive(move || busy.get())
+                            on_confirm=Callback::new(move |()| run(CleanupScope::AllUnused))
+                        />
                         <p class="entry-note">
                             "These still have names. Removing one means pulling it again \
                              the next time something needs it."

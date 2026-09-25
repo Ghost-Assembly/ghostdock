@@ -4,21 +4,20 @@ use leptos::prelude::*;
 use shared::token::{ApiToken, NewApiToken, Permission};
 
 use crate::api;
+use crate::confirm::Confirm;
+use crate::load::Load;
 use crate::screen::Screen;
 
 #[component]
 pub fn Tokens() -> impl IntoView {
     let screen = Screen::new();
-    let tokens = RwSignal::new(Vec::<ApiToken>::new());
+    let tokens = RwSignal::new(Load::<Vec<ApiToken>>::Loading);
     let error = RwSignal::new(None::<String>);
     let revealed = RwSignal::new(None::<(String, String)>);
 
     let refresh = move || {
         screen.load(async move {
-            match api::tokens().await {
-                Ok(list) => tokens.set(list),
-                Err(e) => error.set(Some(e.message)),
-            }
+            tokens.set(Load::from(api::tokens().await));
         });
     };
     Effect::new(move |_| refresh());
@@ -62,19 +61,23 @@ pub fn Tokens() -> impl IntoView {
         })}
 
         <h2 class="group-heading">"Your tokens"</h2>
-        {move || {
-            let list = tokens.get();
-            if list.is_empty() {
-                view! {
-                    <div class="state-note">
-                        <p>"No tokens yet."</p>
-                        <p>"A token lets another program use GhostDock as you, within limits you set."</p>
-                    </div>
-                }
-                .into_any()
-            } else {
-                view! { <TokenRows tokens=list on_change=refresh error /> }.into_any()
+        {move || match tokens.get() {
+            Load::Loading => view! { <p class="state-note">"Loading"</p> }.into_any(),
+            Load::Failed(message) => view! {
+                <div class="state-note">
+                    <p>"Could not read your tokens."</p>
+                    <p>{message}</p>
+                </div>
             }
+            .into_any(),
+            Load::Ready(list) if list.is_empty() => view! {
+                <div class="state-note">
+                    <p>"No tokens yet."</p>
+                    <p>"A token lets another program use GhostDock as you, within limits you set."</p>
+                </div>
+            }
+            .into_any(),
+            Load::Ready(list) => view! { <TokenRows tokens=list on_change=refresh error /> }.into_any(),
         }}
 
         <h2 class="group-heading">"New token"</h2>
@@ -92,30 +95,32 @@ fn TokenRows(
     error: RwSignal<Option<String>>,
 ) -> impl IntoView {
     let screen = Screen::new();
+    // One revocation at a time, so a second pair of taps cannot send it twice.
+    let revoking = RwSignal::new(false);
     view! {
         <ul class="rows">
             {tokens
                 .into_iter()
                 .map(|token| {
                     let id = token.id;
-                    let armed = RwSignal::new(false);
                     let granted = match token.permissions.as_slice() {
                         [only] => only.as_str().to_owned(),
                         all => format!("{} permissions", all.len()),
                     };
                     let used = token.last_used_at.map_or_else(
                         || "never used".to_owned(),
-                        |t| format!("used {}", t.format("%d %b %H:%M")),
+                        |t| format!("used {}", crate::time::local(t, "%d %b %H:%M")),
                     );
                     let expiry = token.expires_at.map_or_else(
                         || "no expiry".to_owned(),
-                        |t| format!("expires {}", t.format("%d %b %Y")),
+                        |t| format!("expires {}", crate::time::local(t, "%d %b %Y")),
                     );
-                    let revoke = move |_| {
-                        if !armed.get_untracked() {
-                            armed.set(true);
+                    let revoke = Callback::new(move |()| {
+                        if revoking.get_untracked() {
                             return;
                         }
+                        revoking.set(true);
+                        error.set(None);
                         screen.act(
                             async move { api::revoke_token(id).await },
                             move |result| {
@@ -123,18 +128,23 @@ fn TokenRows(
                                     Ok(()) => on_change(),
                                     Err(e) => error.set(Some(e.message)),
                                 }
+                                revoking.set(false);
                             },
                         );
-                    };
+                    });
                     view! {
                         <li class="row">
                             <span class="row-link">
                                 <span class="row-bar" data-state="running"></span>
                                 <span class="row-name">{format!("{} ({}…)", token.name, token.prefix)}</span>
                                 <span class="row-detail">{format!("{granted}; {used}; {expiry}")}</span>
-                                <button class="row-action" type="button" on:click=revoke>
-                                    {move || if armed.get() { "Confirm" } else { "Revoke" }}
-                                </button>
+                                <Confirm
+                                    label="Revoke"
+                                    confirm="Revoke it"
+                                    row=true
+                                    disabled=Signal::derive(move || revoking.get())
+                                    on_confirm=revoke
+                                />
                             </span>
                         </li>
                     }

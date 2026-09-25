@@ -194,15 +194,23 @@ fn span(points: &[Reading], range: Range, now: i64) -> (i64, i64) {
 }
 
 fn time_label(t: i64, range: Range) -> String {
-    let Some(at) = chrono::DateTime::from_timestamp(t, 0) else {
-        return String::new();
+    let format = match range {
+        Range::Hour | Range::Day => "%H:%M",
+        Range::Week | Range::Month => "%d %b",
+        Range::Year => "%b %Y",
     };
-    let local = at.with_timezone(&chrono::Local);
-    match range {
-        Range::Hour | Range::Day => local.format("%H:%M").to_string(),
-        Range::Week | Range::Month => local.format("%d %b").to_string(),
-        Range::Year => local.format("%b %Y").to_string(),
-    }
+    crate::time::local_timestamp(t, format)
+}
+
+/// The point to read out: the one picked, by its time, or else the latest.
+///
+/// By time rather than by position: live points arrive at the end and old
+/// ones fall off the start, so a position would slide to another moment
+/// under a finger that has not moved.
+fn reading_at(points: &[Reading], picked: Option<i64>) -> Option<&Reading> {
+    picked
+        .and_then(|t| points.iter().find(|r| r.t == t))
+        .or_else(|| points.last())
 }
 
 /// One measure over a range. Tap or hover to read a moment's value.
@@ -213,7 +221,8 @@ pub fn Chart(
     range: Signal<Range>,
     step: Signal<i64>,
 ) -> impl IntoView {
-    let picked = RwSignal::new(None::<usize>);
+    // The time of the point under the pointer, if one is.
+    let picked = RwSignal::new(None::<i64>);
     let geometry = Memo::new(move |_| {
         let pts = points.get();
         let (t0, t1) = span(&pts, range.get(), chrono::Utc::now().timestamp());
@@ -247,8 +256,7 @@ pub fn Chart(
 
     let readout = move || {
         let pts = points.get();
-        let at = picked.get().and_then(|i| pts.get(i)).or_else(|| pts.last());
-        match at {
+        match reading_at(&pts, picked.get()) {
             Some(r) => {
                 let (avg, peak, _) = measure.values(r);
                 let value = avg.map_or_else(|| "nothing running".to_owned(), |v| measure.format(v));
@@ -278,11 +286,7 @@ pub fn Chart(
         #[allow(clippy::cast_possible_truncation)]
         let t = t0 + ((t1 - t0) as f64 * frac) as i64;
         let pts = points.get_untracked();
-        let nearest = pts
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, r)| (r.t - t).abs())
-            .map(|(i, _)| i);
+        let nearest = pts.iter().min_by_key(|r| (r.t - t).abs()).map(|r| r.t);
         picked.set(nearest);
     };
 
@@ -444,6 +448,26 @@ mod tests {
             (2_400, 6_000),
             "a server clock ahead of this one wins"
         );
+    }
+
+    #[test]
+    fn a_picked_point_stays_put_as_live_points_arrive() {
+        let at = |t| Reading {
+            t,
+            cpu: Some(0.1),
+            ..Reading::default()
+        };
+        let mut points = vec![at(10), at(15), at(20)];
+        let picked = Some(15);
+        assert_eq!(reading_at(&points, picked).map(|r| r.t), Some(15));
+        // A tick arrives and the oldest point falls off the start.
+        points.push(at(25));
+        points.remove(0);
+        assert_eq!(reading_at(&points, picked).map(|r| r.t), Some(15));
+        // Once it has gone, the latest is shown rather than nothing.
+        points.remove(0);
+        assert_eq!(reading_at(&points, picked).map(|r| r.t), Some(25));
+        assert_eq!(reading_at(&points, None).map(|r| r.t), Some(25));
     }
 
     #[test]

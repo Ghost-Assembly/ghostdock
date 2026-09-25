@@ -34,14 +34,17 @@ mod env;
 mod events;
 mod git_stack;
 mod host;
+mod load;
 mod logs;
 mod new_stack;
 mod resources;
 mod screen;
 mod settings;
+mod socket;
 mod sources;
 mod stack;
 mod stacks;
+mod time;
 mod tokens;
 mod updates;
 

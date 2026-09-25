@@ -48,7 +48,15 @@ async function removeGroup(names, mine, button) {
     console.log('skipped       :', `${button}: the host has other stopped containers`);
     return;
   }
+  // Two taps: the first only arms the button.
   await page.click(`button:has-text("${button}")`);
+  await page.waitForTimeout(300);
+  try {
+    execFileSync('docker', ['inspect', mine], { stdio: 'ignore' });
+  } catch {
+    problems.push(`one tap removed ${mine}`);
+  }
+  await page.click('button:has-text("Remove them")');
   // Gone from the preview, which is re-read after removing. The result
   // line cannot be waited on: the previous removal left the same words.
   await page.waitForFunction(

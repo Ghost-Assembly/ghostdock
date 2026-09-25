@@ -13,17 +13,10 @@ use shared::event::ServerEvent;
 use shared::metrics::{Now, format_bytes, format_cores};
 
 use crate::api;
-use crate::app::Session;
 use crate::charts::Sparkline;
 use crate::events::use_events;
+use crate::load::Load;
 use crate::screen::Screen;
-
-#[derive(Clone, Debug, PartialEq)]
-enum Load {
-    Loading,
-    Ready(Vec<Stack>),
-    Failed(String),
-}
 
 /// How alarming a state is. Drives ordering, so the worst is read first.
 fn severity(state: StackState) -> u8 {
@@ -62,8 +55,7 @@ fn state_key(state: StackState) -> &'static str {
 
 #[component]
 pub fn Stacks() -> impl IntoView {
-    let load = RwSignal::new(Load::Loading);
-    let session = use_context::<RwSignal<Session>>();
+    let load = RwSignal::new(Load::<Vec<Stack>>::Loading);
     // Problems with how GhostDock itself is deployed. Shown on the board rather
     // than only in the logs, because the ones found make deploys fail
     // silently and a warning nobody reads protects nobody.
@@ -71,43 +63,52 @@ pub fn Stacks() -> impl IntoView {
     // What each running stack is using now, refreshed every 5 s.
     let figures = RwSignal::new(None::<Now>);
 
-    /// Retires the session on a 401 so the shell falls back to sign-in.
-    fn handle(error: &api::Error, load: RwSignal<Load>, session: Option<RwSignal<Session>>) {
-        match session {
-            Some(session) if error.is_unauthenticated() => session.set(Session::SignedOut),
-            _ => load.set(Load::Failed(error.message.clone())),
-        }
-    }
-
     // Reloads in place: the rows already on screen stay until the new ones
-    // arrive, so a live update never flashes the loading state.
+    // arrive, so a live update never flashes the loading state. Reloads
+    // overlap when events come quickly; only the newest may land, or an
+    // older answer arriving late would put back what has since changed.
+    // A 401 is handled once, for every screen, in the API client.
     let screen = Screen::new();
+    let latest = StoredValue::new(0_u64);
     let refresh = move || {
+        let mine = latest.get_value() + 1;
+        latest.set_value(mine);
+        let current = move || latest.try_get_value() == Some(mine);
         screen.load(async move {
             let hosts = match api::hosts().await {
                 Ok(hosts) => hosts,
                 Err(e) => {
-                    handle(&e, load, session);
+                    if current() {
+                        load.set(Load::Failed(e.message));
+                    }
                     return;
                 }
             };
 
             let Some(host) = hosts.first() else {
-                load.set(Load::Ready(Vec::new()));
+                if current() {
+                    load.set(Load::Ready(Vec::new()));
+                }
                 return;
             };
 
-            if let Ok(info) = api::host_info(host.id).await {
+            if let Ok(info) = api::host_info(host.id).await
+                && current()
+            {
                 problems.set(info.problems);
             }
 
-            match api::stacks(host.id).await {
+            let answer = api::stacks(host.id).await;
+            if !current() {
+                return;
+            }
+            load.set(match answer {
                 Ok(mut stacks) => {
                     stacks.sort_by_key(|s| (severity(s.state), s.project.clone()));
-                    load.set(Load::Ready(stacks));
+                    Load::Ready(stacks)
                 }
-                Err(e) => handle(&e, load, session),
-            }
+                Err(e) => Load::Failed(e.message),
+            });
         });
     };
     refresh();

@@ -4,20 +4,19 @@ use leptos::prelude::*;
 use shared::auth::{Account, Credentials, PasswordChange};
 
 use crate::api;
+use crate::confirm::Confirm;
+use crate::load::Load;
 use crate::screen::Screen;
 
 #[component]
 pub fn Accounts() -> impl IntoView {
     let screen = Screen::new();
-    let accounts = RwSignal::new(Vec::<Account>::new());
+    let accounts = RwSignal::new(Load::<Vec<Account>>::Loading);
     let error = RwSignal::new(None::<String>);
 
     let refresh = move || {
         screen.load(async move {
-            match api::accounts().await {
-                Ok(list) => accounts.set(list),
-                Err(e) => error.set(Some(e.message)),
-            }
+            accounts.set(Load::from(api::accounts().await));
         });
     };
     Effect::new(move |_| refresh());
@@ -33,7 +32,19 @@ pub fn Accounts() -> impl IntoView {
         </Show>
 
         <h2 class="group-heading">"Who can sign in"</h2>
-        {move || view! { <AccountRows accounts=accounts.get() on_change=refresh error /> }}
+        {move || match accounts.get() {
+            Load::Loading => view! { <p class="state-note">"Loading"</p> }.into_any(),
+            Load::Failed(message) => view! {
+                <div class="state-note">
+                    <p>"Could not read the accounts."</p>
+                    <p>{message}</p>
+                </div>
+            }
+            .into_any(),
+            Load::Ready(list) => {
+                view! { <AccountRows accounts=list on_change=refresh error /> }.into_any()
+            }
+        }}
         <p class="entry-note">
             "Every account can do everything, including managing the others. \
              You cannot remove your own."
@@ -54,23 +65,25 @@ fn AccountRows(
     error: RwSignal<Option<String>>,
 ) -> impl IntoView {
     let screen = Screen::new();
+    // One removal at a time, so a second pair of taps cannot send it twice.
+    let removing = RwSignal::new(false);
     view! {
         <ul class="rows">
             {accounts
                 .into_iter()
                 .map(|account| {
                     let id = account.id;
-                    let armed = RwSignal::new(false);
                     let detail = if account.you {
                         "You".to_owned()
                     } else {
-                        format!("Added {}", account.created_at.format("%d %b %Y"))
+                        format!("Added {}", crate::time::local(account.created_at, "%d %b %Y"))
                     };
-                    let remove = move |_| {
-                        if !armed.get_untracked() {
-                            armed.set(true);
+                    let remove = Callback::new(move |()| {
+                        if removing.get_untracked() {
                             return;
                         }
+                        removing.set(true);
+                        error.set(None);
                         screen.act(
                             async move { api::remove_account(id).await },
                             move |result| {
@@ -78,9 +91,10 @@ fn AccountRows(
                                     Ok(()) => on_change(),
                                     Err(e) => error.set(Some(e.message)),
                                 }
+                                removing.set(false);
                             },
                         );
-                    };
+                    });
                     view! {
                         <li class="row">
                             <span class="row-link">
@@ -88,9 +102,13 @@ fn AccountRows(
                                 <span class="row-name">{account.username.clone()}</span>
                                 <span class="row-detail">{detail}</span>
                                 <Show when=move || !account.you>
-                                    <button class="row-action" type="button" on:click=remove>
-                                        {move || if armed.get() { "Confirm" } else { "Remove" }}
-                                    </button>
+                                    <Confirm
+                                        label="Remove"
+                                        confirm="Remove account"
+                                        row=true
+                                        disabled=Signal::derive(move || removing.get())
+                                        on_confirm=remove
+                                    />
                                 </Show>
                             </span>
                         </li>

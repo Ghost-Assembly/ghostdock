@@ -33,15 +33,28 @@ pub fn NewStackForm(#[prop(optional)] editing: bool) -> impl IntoView {
     let error = RwSignal::new(None::<String>);
     let screen = Screen::new();
     let busy = RwSignal::new(false);
+    // Saving an edit before the stored file has arrived would replace it
+    // with whatever half of it had been typed.
+    let loaded = RwSignal::new(!editing);
+    // Set by typing. What someone typed is theirs: a load that lands late
+    // fills only the fields they have not touched.
+    let typed_name = StoredValue::new(false);
+    let typed_yaml = StoredValue::new(false);
 
     // Editing starts from what is stored, not from an empty box.
     Effect::new(move |_| {
         let Some(id) = existing.get() else { return };
+        loaded.set(false);
         screen.load(async move {
             match api::stack_with_yaml(id).await {
                 Ok((stack, compose)) => {
-                    name.set(stack.name);
-                    yaml.set(compose);
+                    if !typed_name.get_value() {
+                        name.set(stack.name);
+                    }
+                    if !typed_yaml.get_value() {
+                        yaml.set(compose);
+                    }
+                    loaded.set(true);
                 }
                 Err(e) => error.set(Some(e.message)),
             }
@@ -50,7 +63,7 @@ pub fn NewStackForm(#[prop(optional)] editing: bool) -> impl IntoView {
 
     let submit = move |ev: leptos::ev::SubmitEvent| {
         ev.prevent_default();
-        if busy.get() {
+        if busy.get() || !loaded.get() {
             return;
         }
         busy.set(true);
@@ -98,7 +111,10 @@ pub fn NewStackForm(#[prop(optional)] editing: bool) -> impl IntoView {
                     type="text"
                     required
                     prop:value=move || name.get()
-                    on:input=move |ev| name.set(event_target_value(&ev))
+                    on:input=move |ev| {
+                        typed_name.set_value(true);
+                        name.set(event_target_value(&ev));
+                    }
                 />
             </label>
 
@@ -112,13 +128,18 @@ pub fn NewStackForm(#[prop(optional)] editing: bool) -> impl IntoView {
                     placeholder=PLACEHOLDER
                     required
                     prop:value=move || yaml.get()
-                    on:input=move |ev| yaml.set(event_target_value(&ev))
+                    on:input=move |ev| {
+                        typed_yaml.set_value(true);
+                        yaml.set(event_target_value(&ev));
+                    }
                 ></textarea>
             </label>
 
-            <button class="button" type="submit" disabled=move || busy.get()>
+            <button class="button" type="submit" disabled=move || busy.get() || !loaded.get()>
                 {move || {
-                    if busy.get() {
+                    if !loaded.get() {
+                        "Loading"
+                    } else if busy.get() {
                         "Saving"
                     } else if editing {
                         "Save changes"

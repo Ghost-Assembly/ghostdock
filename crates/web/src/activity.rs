@@ -4,20 +4,17 @@ use leptos::prelude::*;
 use shared::audit::AuditEntry;
 
 use crate::api;
+use crate::load::Load;
 use crate::screen::Screen;
 
 #[component]
 pub fn Activity() -> impl IntoView {
-    let entries = RwSignal::new(None::<Vec<AuditEntry>>);
-    let error = RwSignal::new(None::<String>);
+    let entries = RwSignal::new(Load::<Vec<AuditEntry>>::Loading);
     let screen = Screen::new();
 
     Effect::new(move |_| {
         screen.load(async move {
-            match api::audit().await {
-                Ok(list) => entries.set(Some(list)),
-                Err(e) => error.set(Some(e.message)),
-            }
+            entries.set(Load::from(api::audit().await));
         });
     });
 
@@ -27,19 +24,22 @@ pub fn Activity() -> impl IntoView {
             <a class="topbar-link" href="/settings">"Back"</a>
         </header>
 
-        <Show when=move || error.get().is_some()>
-            <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
-        </Show>
-
         {move || match entries.get() {
-            None => view! { <p class="state-note">"Loading"</p> }.into_any(),
-            Some(list) if list.is_empty() => view! {
+            Load::Loading => view! { <p class="state-note">"Loading"</p> }.into_any(),
+            Load::Failed(message) => view! {
+                <div class="state-note">
+                    <p>"Could not read the activity."</p>
+                    <p>{message}</p>
+                </div>
+            }
+            .into_any(),
+            Load::Ready(list) if list.is_empty() => view! {
                 <div class="state-note">
                     <p>"Nothing recorded yet."</p>
                 </div>
             }
             .into_any(),
-            Some(list) => view! {
+            Load::Ready(list) => view! {
                 <ul class="rows">
                     {list
                         .into_iter()
@@ -52,7 +52,7 @@ pub fn Activity() -> impl IntoView {
                                 "running"
                             };
                             let detail = format!("{} on {}", entry.username, entry.target);
-                            let when = entry.at.format("%d %b %H:%M").to_string();
+                            let when = crate::time::local(entry.at, "%d %b %H:%M");
                             view! {
                                 <li class="row">
                                     <span class="row-link">

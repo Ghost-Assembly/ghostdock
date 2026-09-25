@@ -8,27 +8,20 @@ use leptos::prelude::*;
 use shared::update::StackUpdate;
 
 use crate::api;
+use crate::load::Load;
 use crate::screen::Screen;
-
-#[derive(Clone, Debug, PartialEq)]
-enum Load {
-    Loading,
-    Ready(Vec<StackUpdate>),
-    Failed(String),
-}
 
 #[component]
 pub fn Updates() -> impl IntoView {
-    let load = RwSignal::new(Load::Loading);
-    let checking = RwSignal::new(false);
+    let load = RwSignal::new(Load::<Vec<StackUpdate>>::Loading);
+    // How far a check of everything has got, while one runs: (done, of).
+    let progress = RwSignal::new(None::<(usize, usize)>);
+    let failures = RwSignal::new(Vec::<String>::new());
 
     let screen = Screen::new();
     let refresh = move || {
         screen.load(async move {
-            load.set(match api::updates(1).await {
-                Ok(list) => Load::Ready(list),
-                Err(e) => Load::Failed(e.message),
-            });
+            load.set(Load::from(api::updates(1).await));
         });
     };
     Effect::new(move |_| refresh());
@@ -37,24 +30,40 @@ pub fn Updates() -> impl IntoView {
     // here; the background sweep is hourly, which is far too slow for
     // someone who has just pushed a commit.
     let check_all = move |_| {
-        if checking.get() {
+        if progress.get_untracked().is_some() {
             return;
         }
-        checking.set(true);
-        let ids: Vec<i64> = match load.get_untracked() {
-            Load::Ready(list) => list.iter().map(|u| u.stack.id).collect(),
-            _ => Vec::new(),
-        };
-        // Every check runs, whether or not anyone stays on this screen.
+        let stacks: Vec<(i64, String)> = load.with_untracked(|l| {
+            l.ready()
+                .map(|list| {
+                    list.iter()
+                        .map(|u| (u.stack.id, u.stack.name.clone()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        });
+        let total = stacks.len();
+        progress.set(Some((0, total)));
+        failures.set(Vec::new());
+        // Every check runs, whether or not anyone stays on this screen. One
+        // at a time, counted as each ends, so a long list shows it is
+        // getting somewhere. A signal whose screen has gone
+        // ignores the write, so counting is safe after leaving.
         screen.act(
             async move {
-                for id in ids {
-                    let _ = api::check_stack(id).await;
+                let mut failed = Vec::new();
+                for (done, (id, name)) in stacks.into_iter().enumerate() {
+                    if let Err(e) = api::check_stack(id).await {
+                        failed.push(format!("{name}: {}", e.message));
+                    }
+                    let _ = progress.try_set(Some((done + 1, total)));
                 }
+                failed
             },
-            move |()| {
+            move |failed| {
+                failures.set(failed);
+                progress.set(None);
                 refresh();
-                checking.set(false);
             },
         );
     };
@@ -62,10 +71,24 @@ pub fn Updates() -> impl IntoView {
     view! {
         <header class="topbar">
             <h1 class="wordmark">"Updates"</h1>
-            <button class="topbar-link" type="button" on:click=check_all disabled=move || checking.get()>
-                {move || if checking.get() { "Checking" } else { "Check now" }}
+            <button
+                class="topbar-link"
+                type="button"
+                on:click=check_all
+                disabled=move || progress.get().is_some() || load.with(|l| l.ready().is_none())
+            >
+                {move || match progress.get() {
+                    Some((done, total)) => format!("Checked {done} of {total}"),
+                    None => "Check now".to_owned(),
+                }}
             </button>
         </header>
+
+        <Show when=move || failures.with(|f| !f.is_empty())>
+            <p class="notice" role="alert">
+                {move || format!("Some checks could not run. {}", failures.get().join(" "))}
+            </p>
+        </Show>
 
         {move || match load.get() {
             Load::Loading => view! { <p class="state-note">"Loading"</p> }.into_any(),

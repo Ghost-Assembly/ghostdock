@@ -3,11 +3,14 @@
 
 use leptos::prelude::*;
 use shared::event::ServerEvent;
-use shared::metrics::{Current, Now, Range, Target, format_bytes, format_cores, format_rate};
+use shared::metrics::{
+    Current, Now, Range, Recommendation, Target, format_bytes, format_cores, format_rate,
+};
 
 use crate::api;
 use crate::charts::{Measure, UsageBar};
 use crate::events::use_events;
+use crate::load::Load;
 use crate::resources::{Charts, RangePicker, SizingRows};
 use crate::screen::Screen;
 
@@ -19,7 +22,7 @@ pub fn Host() -> impl IntoView {
     let now = RwSignal::new(None::<Now>);
     let error = RwSignal::new(None::<String>);
     let range = RwSignal::new(Range::Hour);
-    let advice = RwSignal::new(Vec::new());
+    let advice = RwSignal::new(Load::<Vec<Recommendation>>::Loading);
 
     screen.load(async move {
         match api::metrics_now().await {
@@ -28,9 +31,7 @@ pub fn Host() -> impl IntoView {
         }
     });
     screen.load(async move {
-        if let Ok(list) = api::sizing().await {
-            advice.set(list);
-        }
+        advice.set(Load::from(api::sizing().await));
     });
     if let Some(events) = use_events() {
         events.on(move |event| {
@@ -44,17 +45,18 @@ pub fn Host() -> impl IntoView {
         let n = now.get()?;
         let host = n.host?;
         let cpus = n.host_cpus.map(|c| format!(" of {c}")).unwrap_or_default();
-        let cpu = host
-            .cpu
-            .map(|c| format!("{}{cpus}", format_cores(c)))
-            .unwrap_or_default();
+        let cpu = host.cpu.map(|c| format!("{}{cpus}", format_cores(c)));
         let mem = match (host.mem, host.mem_limit) {
-            (Some(used), Some(total)) => {
-                format!("{} of {} memory", format_bytes(used), format_bytes(total))
-            }
-            _ => String::new(),
+            (Some(used), Some(total)) => Some(format!(
+                "{} of {} memory",
+                format_bytes(used),
+                format_bytes(total)
+            )),
+            _ => None,
         };
-        Some(format!("{cpu}, {mem}"))
+        // Only the figures there are: a missing one leaves no stray comma.
+        let parts: Vec<String> = [cpu, mem].into_iter().flatten().collect();
+        (!parts.is_empty()).then(|| parts.join(", "))
     };
 
     view! {
@@ -115,13 +117,17 @@ pub fn Host() -> impl IntoView {
             m
         }, |c| format_bytes(c.reading.mem.unwrap_or(0)))}
         <h2 class="group-heading">"Sizing"</h2>
-        {move || {
-            let list = advice.get();
-            if list.is_empty() {
-                view! { <p class="entry-note">"Advice appears once containers have 3 days of history."</p> }.into_any()
-            } else {
-                view! { <SizingRows list /> }.into_any()
+        {move || match advice.get() {
+            Load::Loading => view! { <p class="entry-note">"Reading advice"</p> }.into_any(),
+            Load::Failed(message) => view! {
+                <p class="entry-note">{format!("Could not read the advice. {message}")}</p>
             }
+            .into_any(),
+            Load::Ready(list) if list.is_empty() => view! {
+                <p class="entry-note">"Advice appears once containers have 3 days of history."</p>
+            }
+            .into_any(),
+            Load::Ready(list) => view! { <SizingRows list /> }.into_any(),
         }}
     }
 }

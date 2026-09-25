@@ -24,6 +24,21 @@ page.on('console', m => {
 });
 page.on('pageerror', e => problems.push(`pageerror: ${e.message}`));
 
+// Every socket the page opens, and whether it has closed. A screen that
+// holds one must close it when it goes: an open shell socket is a shell
+// still running on the server.
+const sockets = [];
+page.on('websocket', ws => {
+  const entry = { url: ws.url(), closed: false };
+  sockets.push(entry);
+  ws.on('close', () => { entry.closed = true; });
+});
+const openShells = () => sockets.filter(s => s.url.includes('/exec') && !s.closed).length;
+async function shellsClosed() {
+  for (let i = 0; i < 50 && openShells() > 0; i++) await page.waitForTimeout(100);
+  return openShells() === 0;
+}
+
 const cdp = await ctx.newCDPSession(page);
 await cdp.send('Network.enable');
 await cdp.send('Network.emulateNetworkConditions', {
@@ -38,7 +53,7 @@ await page.waitForSelector('.nav-item', { timeout: 30000 });
 
 // Events in the background: the container stops and starts throughout.
 let churning = true;
-(async () => {
+const churn = (async () => {
   for (let i = 0; churning; i++) {
     await new Promise(r => execFile('docker', [i % 2 ? 'start' : 'stop', '-t', '0', 'livebox-box-1'], r));
     await new Promise(r => setTimeout(r, 400));
@@ -69,6 +84,19 @@ for (let round = 0; round < ROUNDS; round++) {
   for (let i = 0; i < 3; i++) { await page.goForward(); await page.waitForTimeout(40); }
 }
 churning = false;
+await churn;
+
+// Leaving the shell closes its socket. Checked with the container running
+// and nothing else closing it: the server ends a shell whose container
+// stops, which would otherwise hide a screen that never let go.
+await new Promise(r => execFile('docker', ['start', 'livebox-box-1'], r));
+const go = r => page.evaluate(to => { history.pushState(null, '', to); dispatchEvent(new PopStateEvent('popstate')); }, r);
+await go(containerShell);
+await page.waitForFunction(() => !document.querySelector('button[type=submit]')?.disabled, null, { timeout: 20000 });
+await go('/settings');
+const closed = await shellsClosed();
+console.log('shell sockets :', `${sockets.filter(s => s.url.includes('/exec')).length} opened, ${closed ? 'all closed on leaving' : `${openShells()} LEFT OPEN`}`);
+if (!closed) problems.push('leaving the shell left its socket open');
 
 // Still alive? A dead client cannot navigate or render.
 await page.evaluate(() => { history.pushState(null, '', '/settings'); dispatchEvent(new PopStateEvent('popstate')); });

@@ -6,31 +6,51 @@ use shared::host::HostInfo;
 
 use crate::api;
 use crate::app::Session;
+use crate::load::Load;
 use crate::screen::Screen;
 
 #[component]
 pub fn Settings(user: User, session: RwSignal<Session>) -> impl IntoView {
-    let info = RwSignal::new(Option::<HostInfo>::None);
+    let info = RwSignal::new(Load::<HostInfo>::Loading);
     let screen = Screen::new();
+    let signing_out = RwSignal::new(false);
+    let sign_out_error = RwSignal::new(None::<String>);
 
     screen.load(async move {
-        if let Ok(hosts) = api::hosts().await
-            && let Some(host) = hosts.first()
-            && let Ok(detail) = api::host_info(host.id).await
-        {
-            info.set(Some(detail));
-        }
+        info.set(match api::hosts().await {
+            Ok(hosts) => match hosts.first() {
+                Some(host) => Load::from(api::host_info(host.id).await),
+                None => Load::Failed("GhostDock has no host to show.".to_owned()),
+            },
+            Err(e) => Load::Failed(e.message),
+        });
     });
 
-    // The session is the whole app's, not this screen's, so it is updated
-    // as part of the request: signing out lands wherever you have gone.
+    // Signed out only once the server says so: a sign-in screen shown while
+    // the session is still good would be a lie, and a dangerous one on a
+    // shared device. The session is the whole app's, not this screen's, so
+    // it is updated as part of the request: signing out lands wherever you
+    // have gone.
     let sign_out = move |_| {
+        if signing_out.get_untracked() {
+            return;
+        }
+        signing_out.set(true);
+        sign_out_error.set(None);
         screen.act(
             async move {
-                let _ = api::logout().await;
-                session.set(Session::SignedOut);
+                let result = api::logout().await;
+                if result.is_ok() {
+                    session.set(Session::SignedOut);
+                }
+                result
             },
-            |()| {},
+            move |result| {
+                if let Err(e) = result {
+                    sign_out_error.set(Some(format!("Still signed in. {}", e.message)));
+                }
+                signing_out.set(false);
+            },
         );
     };
 
@@ -66,8 +86,15 @@ pub fn Settings(user: User, session: RwSignal<Session>) -> impl IntoView {
 
         <h2 class="group-heading">"Host"</h2>
         {move || match info.get() {
-            None => view! { <p class="state-note">"Reading host"</p> }.into_any(),
-            Some(detail) => {
+            Load::Loading => view! { <p class="state-note">"Reading host"</p> }.into_any(),
+            Load::Failed(message) => view! {
+                <div class="state-note">
+                    <p>"Could not read the host."</p>
+                    <p>{message}</p>
+                </div>
+            }
+            .into_any(),
+            Load::Ready(detail) => {
                 let reachable = detail.unreachable_reason.is_none();
                 let version = detail
                     .server_version
@@ -135,8 +162,11 @@ pub fn Settings(user: User, session: RwSignal<Session>) -> impl IntoView {
         </ul>
 
         <h2 class="group-heading">"Session"</h2>
-        <button class="button" type="button" on:click=sign_out>
-            "Sign out"
+        <Show when=move || sign_out_error.get().is_some()>
+            <p class="notice" role="alert">{move || sign_out_error.get().unwrap_or_default()}</p>
+        </Show>
+        <button class="button" type="button" disabled=move || signing_out.get() on:click=sign_out>
+            {move || if signing_out.get() { "Signing out" } else { "Sign out" }}
         </button>
     }
 }

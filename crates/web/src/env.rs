@@ -10,7 +10,20 @@ use leptos_router::hooks::use_params_map;
 use shared::source::EnvValue;
 
 use crate::api;
+use crate::confirm::Confirm;
+use crate::load::Load;
 use crate::screen::Screen;
+
+/// A name the server will take: letters, digits and underscores, not
+/// starting with a digit. Checked here too, so a typo is explained before
+/// anything is sent rather than refused after.
+fn valid_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
 
 #[component]
 pub fn StackEnvironment() -> impl IntoView {
@@ -23,20 +36,21 @@ pub fn StackEnvironment() -> impl IntoView {
             .unwrap_or_default()
     });
 
-    let keys = RwSignal::new(Vec::<String>::new());
+    let keys = RwSignal::new(Load::<Vec<String>>::Loading);
     let error = RwSignal::new(None::<String>);
     let screen = Screen::new();
     let key = RwSignal::new(String::new());
     let value = RwSignal::new(String::new());
     let busy = RwSignal::new(false);
+    // One removal at a time, so a second pair of taps cannot send it twice.
+    let removing = RwSignal::new(false);
 
     let refresh = move || {
         let stack = id.get_untracked();
         screen.load(async move {
-            match api::stack_env_keys(stack).await {
-                Ok(listed) => keys.set(listed.keys),
-                Err(e) => error.set(Some(e.message)),
-            }
+            keys.set(Load::from(
+                api::stack_env_keys(stack).await.map(|listed| listed.keys),
+            ));
         });
     };
     Effect::new(move |_| {
@@ -49,9 +63,16 @@ pub fn StackEnvironment() -> impl IntoView {
         if busy.get() {
             return;
         }
+        let name = key.get();
+        if !valid_name(&name) {
+            error.set(Some(
+                "A name uses letters, digits and underscores, and does not start with a digit."
+                    .to_owned(),
+            ));
+            return;
+        }
         busy.set(true);
         error.set(None);
-        let name = key.get();
         let body = EnvValue { value: value.get() };
         let stack = id.get_untracked();
         screen.act(
@@ -59,7 +80,7 @@ pub fn StackEnvironment() -> impl IntoView {
             move |result| {
                 match result {
                     Ok(listed) => {
-                        keys.set(listed.keys);
+                        keys.set(Load::Ready(listed.keys));
                         key.set(String::new());
                         value.set(String::new());
                     }
@@ -68,6 +89,28 @@ pub fn StackEnvironment() -> impl IntoView {
                 busy.set(false);
             },
         );
+    };
+
+    let remove = move |name: String| {
+        Callback::new(move |()| {
+            if removing.get_untracked() {
+                return;
+            }
+            removing.set(true);
+            error.set(None);
+            let name = name.clone();
+            let stack = id.get_untracked();
+            screen.act(
+                async move { api::delete_stack_env_one(stack, &name).await },
+                move |result| {
+                    match result {
+                        Ok(listed) => keys.set(Load::Ready(listed.keys)),
+                        Err(e) => error.set(Some(e.message)),
+                    }
+                    removing.set(false);
+                },
+            );
+        })
     };
 
     view! {
@@ -80,58 +123,48 @@ pub fn StackEnvironment() -> impl IntoView {
             <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
         </Show>
 
-        {move || {
-            let list = keys.get();
-            if list.is_empty() {
-                view! {
-                    <div class="state-note">
-                        <p>"No variables yet."</p>
-                        <p>"Anything you add here is encrypted and written to the stack's .env."</p>
-                    </div>
-                }
-                .into_any()
-            } else {
-                view! {
-                    <ul class="rows">
-                        {list
-                            .into_iter()
-                            .map(|name| {
-                                let removing = name.clone();
-                                let remove = move |_| {
-                                    let removing = removing.clone();
-                                    let stack = id.get_untracked();
-                                    screen.act(
-                                        async move {
-                                            api::delete_stack_env_one(stack, &removing).await
-                                        },
-                                        move |result| match result {
-                                            Ok(listed) => keys.set(listed.keys),
-                                            Err(e) => error.set(Some(e.message)),
-                                        },
-                                    );
-                                };
-                                view! {
-                                    <li class="row">
-                                        <span class="row-link">
-                                            <span class="row-bar" data-state="running"></span>
-                                            <span class="row-name">{name.clone()}</span>
-                                            <span class="row-detail">"set"</span>
-                                            <button
-                                                class="row-action"
-                                                type="button"
-                                                on:click=remove
-                                            >
-                                                "Remove"
-                                            </button>
-                                        </span>
-                                    </li>
-                                }
-                            })
-                            .collect_view()}
-                    </ul>
-                }
-                .into_any()
+        {move || match keys.get() {
+            Load::Loading => view! { <p class="state-note">"Loading"</p> }.into_any(),
+            Load::Failed(message) => view! {
+                <div class="state-note">
+                    <p>"Could not read the variables."</p>
+                    <p>{message}</p>
+                </div>
             }
+            .into_any(),
+            Load::Ready(list) if list.is_empty() => view! {
+                <div class="state-note">
+                    <p>"No variables yet."</p>
+                    <p>"Anything you add here is encrypted and written to the stack's .env."</p>
+                </div>
+            }
+            .into_any(),
+            Load::Ready(list) => view! {
+                <ul class="rows">
+                    {list
+                        .into_iter()
+                        .map(|name| {
+                            view! {
+                                <li class="row">
+                                    <span class="row-link">
+                                        <span class="row-bar" data-state="running"></span>
+                                        <span class="row-name">{name.clone()}</span>
+                                        <span class="row-detail">"set"</span>
+                                        <Confirm
+                                            label="Remove"
+                                            confirm="Remove it"
+                                            row=true
+                                            disabled=Signal::derive(move || removing.get())
+                                            on_confirm=remove(name)
+                                        />
+                                    </span>
+                                </li>
+                            }
+                        })
+                        .collect_view()}
+                </ul>
+            }
+            .into_any(),
         }}
 
         <h2 class="group-heading">"Add or replace"</h2>
@@ -166,5 +199,20 @@ pub fn StackEnvironment() -> impl IntoView {
                 "Values are encrypted and never shown again. Deploy to apply a change."
             </p>
         </form>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_name;
+
+    #[test]
+    fn a_name_is_what_the_server_accepts() {
+        for ok in ["API_KEY", "_private", "a1", "X"] {
+            assert!(valid_name(ok), "{ok}");
+        }
+        for bad in ["", "1ST", "BAD-NAME", "A/B", "..", "SPACE D", "É"] {
+            assert!(!valid_name(bad), "{bad}");
+        }
     }
 }
