@@ -127,3 +127,43 @@ pub fn restart(project: &Project) -> Vec<String> {
     argv.push("restart".to_owned());
     argv
 }
+
+/// Identifies a project by name only, for when its file is not at hand.
+///
+/// Compose then finds the project's containers and networks by their
+/// labels. It also looks for a default-named file in `dir` and every
+/// directory above it and would use one it found, so a caller checks
+/// [`crate::default_file_above`] first.
+fn by_name(name: &str, dir: &Path) -> Vec<String> {
+    vec![
+        "compose".to_owned(),
+        "--project-name".to_owned(),
+        name.to_owned(),
+        "--project-directory".to_owned(),
+        dir.display().to_string(),
+    ]
+}
+
+/// [`down`], for a project known only by name. Volumes stay, as always.
+#[must_use]
+pub fn down_by_name(name: &str, dir: &Path) -> Vec<String> {
+    let mut argv = by_name(name, dir);
+    argv.extend(["down".to_owned(), "--remove-orphans".to_owned()]);
+    argv
+}
+
+/// [`stop`], for a project known only by name.
+#[must_use]
+pub fn stop_by_name(name: &str, dir: &Path) -> Vec<String> {
+    let mut argv = by_name(name, dir);
+    argv.push("stop".to_owned());
+    argv
+}
+
+/// [`restart`], for a project known only by name.
+#[must_use]
+pub fn restart_by_name(name: &str, dir: &Path) -> Vec<String> {
+    let mut argv = by_name(name, dir);
+    argv.push("restart".to_owned());
+    argv
+}

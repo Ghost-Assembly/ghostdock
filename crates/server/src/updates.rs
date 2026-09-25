@@ -60,16 +60,22 @@ async fn check_now(
 }
 
 async fn set_auto_apply(
-    _principal: Authorized<perm::UpdatesAutoApply>,
+    principal: Authorized<perm::UpdatesAutoApply>,
     State(state): State<AppState>,
     Path(id): Path<i64>,
     Json(body): Json<AutoApply>,
 ) -> Result<Json<AutoApply>, ApiError> {
-    state
+    let stack = state
         .store
         .stack_by_id(id)
         .await?
         .ok_or(ApiError::NotFound)?;
     state.store.stack_set_auto_apply(id, body.enabled).await?;
+    let action = if body.enabled {
+        "turn on auto-apply"
+    } else {
+        "turn off auto-apply"
+    };
+    crate::audit::record(&state, &principal, action, &stack.slug, None).await;
     Ok(Json(body))
 }

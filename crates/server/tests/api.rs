@@ -2132,3 +2132,327 @@ async fn running_a_command_needs_shell_open_and_a_daemon() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+// ---- operations on what was deployed --------------------------------------
+
+fn daemon_available() -> bool {
+    std::process::Command::new("docker")
+        .args(["info", "--format", "{{.ServerVersion}}"])
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+fn git_in(dir: &std::path::Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+impl Client {
+    /// Runs an operation and waits for its outcome.
+    async fn operate(&mut self, stack: i64, verb: &str) -> Value {
+        let (status, started) = self
+            .send("POST", &format!("/api/v1/stacks/{stack}/{verb}"), None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{verb}: {started}");
+        let id = started["id"].as_i64().unwrap();
+        for _ in 0..600 {
+            let (_, detail) = self
+                .send("GET", &format!("/api/v1/deployments/{id}"), None)
+                .await;
+            if detail["status"] != json!("running") {
+                return detail;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+        panic!("{verb} did not finish");
+    }
+}
+
+#[tokio::test]
+async fn restarting_does_not_fetch_or_mark_the_stack_up_to_date() {
+    // Only a deploy changes what a stack runs. Restarting after a push must
+    // leave the new commit waiting, not claim it was applied.
+    if !daemon_available() {
+        eprintln!("SKIPPED: no Docker daemon reachable");
+        return;
+    }
+    let origin = tempfile::tempdir().unwrap();
+    std::fs::write(
+        origin.path().join("compose.yaml"),
+        "services:\n  app:\n    image: alpine:3.22\n    command: [\"sleep\", \"3600\"]\n",
+    )
+    .unwrap();
+    git_in(
+        origin.path(),
+        &["init", "--quiet", "--initial-branch", "main", "."],
+    );
+    git_in(origin.path(), &["add", "."]);
+    git_in(origin.path(), &["commit", "--quiet", "-m", "first"]);
+    let url = format!("file://{}", origin.path().display());
+
+    let mut c = Client::signed_in().await;
+    let repo = c.repo(&url, None).await;
+    let (status, stack) = c
+        .send(
+            "POST",
+            "/api/v1/hosts/1/stacks/git",
+            Some(json!({
+                "name": "ghostdocktest-restart-behind", "repo_id": repo,
+                "git_ref": "refs/heads/main", "compose_path": "compose.yaml"
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{stack}");
+    let id = stack["id"].as_i64().unwrap();
+
+    let deployed = c.operate(id, "deploy").await;
+    let deployed_ok = deployed["status"] == json!("succeeded");
+    let deployed_commit = deployed["commit_sha"].clone();
+
+    std::fs::write(origin.path().join("README.md"), "moved on\n").unwrap();
+    git_in(origin.path(), &["add", "."]);
+    git_in(origin.path(), &["commit", "--quiet", "-m", "second"]);
+
+    let restarted = c.operate(id, "restart").await;
+    let (_, after) = c
+        .send("POST", &format!("/api/v1/stacks/{id}/check"), None)
+        .await;
+    let (_, now) = c.send("GET", &format!("/api/v1/stacks/{id}"), None).await;
+    let down = c.operate(id, "down").await;
+
+    assert!(deployed_ok, "{}", deployed["log"]);
+    assert_eq!(
+        restarted["status"],
+        json!("succeeded"),
+        "{}",
+        restarted["log"]
+    );
+    assert_eq!(
+        restarted["commit_sha"],
+        Value::Null,
+        "restart fetched nothing"
+    );
+    assert_eq!(
+        now["git"]["last_commit"], deployed_commit,
+        "the deployed commit is still the first one"
+    );
+    assert_eq!(after["deployed_commit"], deployed_commit);
+    assert_ne!(
+        after["remote_commit"], after["deployed_commit"],
+        "the new commit is still waiting: {after}"
+    );
+    assert_eq!(down["status"], json!("succeeded"), "{}", down["log"]);
+}
+
+#[tokio::test]
+async fn taking_down_a_stack_never_deployed_from_here_uses_its_name() {
+    // A stack imported while already running has no checkout here yet.
+    // Taking it down must not fetch one first.
+    if !daemon_available() {
+        eprintln!("SKIPPED: no Docker daemon reachable");
+        return;
+    }
+    let mut c = Client::signed_in().await;
+    // Unreachable on purpose: any fetch would fail the operation.
+    let repo = c.repo("file:///nonexistent/ghostdocktest.git", None).await;
+    let (_, stack) = c
+        .send(
+            "POST",
+            "/api/v1/hosts/1/stacks/git",
+            Some(json!({
+                "name": "ghostdocktest-never-deployed", "repo_id": repo,
+                "git_ref": "refs/heads/main", "compose_path": "compose.yaml"
+            })),
+        )
+        .await;
+    let id = stack["id"].as_i64().unwrap();
+
+    for verb in ["stop", "restart", "down"] {
+        let done = c.operate(id, verb).await;
+        assert_eq!(
+            done["status"],
+            json!("succeeded"),
+            "{verb}: {}",
+            done["log"]
+        );
+    }
+}
+
+/// A git server that accepts connections and never answers, so anything
+/// fetching from it stays busy until the listener is dropped.
+async fn silent_remote() -> (tokio::task::JoinHandle<()>, String) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("git://{}/stacks.git", listener.local_addr().unwrap());
+    let held = tokio::spawn(async move {
+        let mut open = Vec::new();
+        while let Ok((socket, _)) = listener.accept().await {
+            open.push(socket);
+        }
+    });
+    (held, url)
+}
+
+#[tokio::test]
+async fn a_stack_cannot_be_forgotten_while_something_is_running_for_it() {
+    let (remote, url) = silent_remote().await;
+    let mut c = Client::signed_in().await;
+    let repo = c.repo(&url, None).await;
+    let (_, stack) = c
+        .send(
+            "POST",
+            "/api/v1/hosts/1/stacks/git",
+            Some(json!({
+                "name": "Busy", "repo_id": repo,
+                "git_ref": "refs/heads/main", "compose_path": "compose.yaml"
+            })),
+        )
+        .await;
+    let id = stack["id"].as_i64().unwrap();
+
+    let (status, _) = c
+        .send("POST", &format!("/api/v1/stacks/{id}/deploy"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = c
+        .send("DELETE", &format!("/api/v1/stacks/{id}"), None)
+        .await;
+    remote.abort();
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (status, _) = c.send("GET", &format!("/api/v1/stacks/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "still registered");
+}
+
+#[tokio::test]
+async fn forgetting_a_stack_removes_its_secrets_file_and_nothing_else() {
+    let mut c = Client::signed_in().await;
+    let (_, stack) = c
+        .send(
+            "POST",
+            "/api/v1/hosts/1/stacks",
+            Some(Client::stack("App", COMPOSE)),
+        )
+        .await;
+    let id = stack["id"].as_i64().unwrap();
+    // As a deploy leaves it.
+    let dir = c._stacks_root.path().join("app");
+    std::fs::create_dir_all(dir.join("data")).unwrap();
+    std::fs::write(dir.join(".env"), "API_KEY=sk_live_secret\n").unwrap();
+    std::fs::write(dir.join("docker-compose.yml"), COMPOSE).unwrap();
+    std::fs::write(dir.join("data/app.db"), "keep me").unwrap();
+
+    let (status, _) = c
+        .send("DELETE", &format!("/api/v1/stacks/{id}"), None)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    assert!(!dir.join(".env").exists(), "the secrets outlived the stack");
+    assert!(dir.join("docker-compose.yml").exists());
+    assert!(
+        dir.join("data/app.db").exists(),
+        "data must never be removed"
+    );
+}
+
+#[tokio::test]
+async fn removing_a_repository_removes_its_discovery_checkout() {
+    let (_dir, url) = discovery_repo();
+    let mut c = Client::signed_in().await;
+    let repo = c.repo(&url, None).await;
+    c.send(
+        "POST",
+        &format!("/api/v1/repos/{repo}/discover"),
+        Some(json!({ "git_ref": "refs/heads/main", "pattern": null })),
+    )
+    .await;
+    let checkout = c
+        ._stacks_root
+        .path()
+        .join(".discovery")
+        .join(repo.to_string());
+    assert!(checkout.join(".git").exists(), "discovery checked it out");
+
+    let (status, _) = c
+        .send("DELETE", &format!("/api/v1/repos/{repo}"), None)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(!checkout.exists());
+}
+
+#[tokio::test]
+async fn every_change_to_a_stack_or_its_sources_is_recorded_without_values() {
+    let mut c = Client::signed_in().await;
+    let (_, stack) = c
+        .send(
+            "POST",
+            "/api/v1/hosts/1/stacks",
+            Some(Client::stack("App", COMPOSE)),
+        )
+        .await;
+    let id = stack["id"].as_i64().unwrap();
+    let repo = c.repo("https://example.invalid/r.git", None).await;
+
+    c.send(
+        "PUT",
+        &format!("/api/v1/stacks/{id}"),
+        Some(Client::stack("App", "services: {}  # sk_in_compose\n")),
+    )
+    .await;
+    c.send(
+        "PUT",
+        &format!("/api/v1/stacks/{id}/env"),
+        Some(json!({ "vars": [{ "key": "API_KEY", "value": "sk_live_secret" }] })),
+    )
+    .await;
+    c.send("DELETE", &format!("/api/v1/stacks/{id}/env/API_KEY"), None)
+        .await;
+    c.send(
+        "PUT",
+        &format!("/api/v1/stacks/{id}/auto-apply"),
+        Some(json!({ "enabled": true })),
+    )
+    .await;
+    c.send("DELETE", &format!("/api/v1/repos/{repo}"), None)
+        .await;
+
+    let (_, body) = c.send("GET", "/api/v1/audit", None).await;
+    let entries: Vec<(String, String)> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["action"].as_str().unwrap().to_owned(),
+                e["target"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    for (action, target) in [
+        ("edit compose file", "app"),
+        ("replace variables", "app"),
+        ("remove variable", "API_KEY"),
+        ("turn on auto-apply", "app"),
+        ("remove repository", "https://example.invalid/r.git"),
+    ] {
+        assert!(
+            entries.contains(&(action.to_owned(), target.to_owned())),
+            "no {action} of {target} in {entries:?}"
+        );
+    }
+    let rendered = body.to_string();
+    assert!(rendered.contains("API_KEY"), "names are recorded");
+    assert!(!rendered.contains("sk_live_secret"), "a value was recorded");
+    assert!(!rendered.contains("sk_in_compose"), "the file was recorded");
+}

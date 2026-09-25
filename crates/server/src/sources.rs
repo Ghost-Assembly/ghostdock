@@ -149,16 +149,26 @@ async fn create_repo(
 }
 
 async fn delete_repo(
-    _principal: Authorized<perm::ReposManage>,
+    principal: Authorized<perm::ReposManage>,
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<axum::http::StatusCode, ApiError> {
+    let repo = state
+        .store
+        .repo_by_id(id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
     state.store.repo_delete(id).await.map_err(|e| match e {
         store::Error::InUse => ApiError::Conflict(
             "Stacks are still defined in this repository. Remove them first.".to_owned(),
         ),
         other => ApiError::from(other),
     })?;
+    // Discovery's checkout of it is of no use to anyone now.
+    if let Err(e) = state.runner.forget_discovery(id).await {
+        tracing::warn!(error = %e, repo = id, "could not remove a repository's discovery checkout");
+    }
+    crate::audit::record(&state, &principal, "remove repository", &repo.url, None).await;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -286,12 +296,12 @@ async fn list_env(
 }
 
 async fn set_env(
-    _principal: Authorized<perm::EnvWrite>,
+    principal: Authorized<perm::EnvWrite>,
     State(state): State<AppState>,
     Path(id): Path<i64>,
     Json(env): Json<StackEnv>,
 ) -> Result<Json<StackEnvKeys>, ApiError> {
-    state
+    let stack = state
         .store
         .stack_by_id(id)
         .await?
@@ -310,6 +320,16 @@ async fn set_env(
     compose::env::render(&vars).map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     state.store.stack_env_set(id, &vars).await?;
+    // The names, never the values.
+    let names: Vec<&str> = vars.iter().map(|(key, _)| key.as_str()).collect();
+    crate::audit::record(
+        &state,
+        &principal,
+        "replace variables",
+        &stack.slug,
+        Some(&names.join(", ")),
+    )
+    .await;
     Ok(Json(StackEnvKeys {
         keys: state.store.stack_env_keys(id).await?,
     }))
@@ -347,7 +367,7 @@ async fn set_one_env(
 }
 
 async fn delete_one_env(
-    _principal: Authorized<perm::EnvWrite>,
+    principal: Authorized<perm::EnvWrite>,
     State(state): State<AppState>,
     Path((id, key)): Path<(i64, String)>,
 ) -> Result<Json<StackEnvKeys>, ApiError> {
@@ -357,6 +377,7 @@ async fn delete_one_env(
         .await?
         .ok_or(ApiError::NotFound)?;
     state.store.stack_env_delete_one(id, &key).await?;
+    crate::audit::record(&state, &principal, "remove variable", &key, None).await;
     Ok(Json(StackEnvKeys {
         keys: state.store.stack_env_keys(id).await?,
     }))
