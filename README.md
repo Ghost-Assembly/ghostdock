@@ -21,7 +21,10 @@ UI a reconciler with buttons. GhostDock is built around that:
 - **Watch it live.** The board follows Docker's own events, so a container
   that stops, crashes or turns unhealthy shows up without a refresh, whoever
   caused it. Logs can be searched, downloaded, and followed as they are
-  written; a shell opens in any container.
+  written; a shell opens in any container. The Logs screen follows many
+  containers at once, up to 50: a whole stack, every running container, or
+  the ones you pick, merged by time and each line labeled with its
+  container, with pause and a stderr-only view.
 - **See what everything uses.** CPU, memory, network and disk for the host,
   each stack and each container, live and over a year; and the limits a
   container's history supports, with the evidence and compose lines to paste.

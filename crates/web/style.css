@@ -1254,3 +1254,73 @@ select.field-input {
     grid-template-columns: repeat(auto-fill, minmax(22rem, 1fr));
   }
 }
+
+/* ---- logs across containers ------------------------------------------- */
+
+/* What is being read, folded away: on a phone the lines are the point. */
+.mlog-picker {
+  margin: 0 0 1rem;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  padding-inline: 0.75rem;
+}
+
+.mlog-summary {
+  min-height: 2.75rem;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+
+.mlog-group {
+  margin-block-end: 0.5rem;
+}
+
+.mlog-stack {
+  font-weight: 600;
+}
+
+/* A stack's containers sit under it. */
+.mlog-member {
+  padding-inline-start: 1.25rem;
+}
+
+/* Each line's container in a column of its own, so lines are told apart
+ * by name, never by color: color means state. */
+.mlog-line {
+  display: grid;
+  grid-template-columns: minmax(0, 8.5rem) minmax(0, 1fr);
+  column-gap: 0.75rem;
+}
+
+.mlog-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-dim);
+}
+
+.mlog-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Matches are outlined and underlined, not colored. */
+.mlog-match {
+  background: none;
+  color: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  outline: 1px solid currentColor;
+  outline-offset: 0;
+  border-radius: 2px;
+}
+
+@media (max-width: 30rem) {
+  .mlog-line {
+    grid-template-columns: minmax(0, 6.5rem) minmax(0, 1fr);
+    column-gap: 0.5rem;
+  }
+}

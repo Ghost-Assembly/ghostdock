@@ -386,6 +386,9 @@ pub fn StackDetail() -> impl IntoView {
             .into_any(),
             Load::Ready(list) => view! { <ContainerRows containers=list stack=id.get() /> }.into_any(),
         }}
+        <a class="button button-quiet" href=move || format!("/logs?stack={}", id.get())>
+            "Follow its logs"
+        </a>
 
         // Only once the stack is known: its name is the series' subject.
         <Show when=move || stack.with(Option::is_some)>

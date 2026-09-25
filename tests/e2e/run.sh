@@ -26,7 +26,7 @@ mkdir -p "$SHOTS"
 
 # Only what these tests create. Other containers on the host are not this
 # script's business.
-PROJECTS=(demo-app broken blog shellbox livebox ticker chatter)
+PROJECTS=(demo-app broken blog shellbox livebox ticker chatter ghostdock-e2e-multilogs)
 
 # Stopped containers the cleanup test creates for itself to remove.
 CLEANUP_FIXTURES=(ghostdock-e2e-gone-web-1 ghostdock-e2e-by-hand)
@@ -250,6 +250,23 @@ test_jank() {
   run jank
 }
 
+# Two containers in one stack: one chatty on stdout, one slower that also
+# writes to stderr.
+MULTILOGS='services:
+  north:
+    image: alpine:3.22
+    command: ["sh", "-c", "i=0; while :; do echo \"north line $$i\"; echo \"north warn $$i\" >&2; i=$$((i+1)); sleep 0.5; done"]
+  south:
+    image: alpine:3.22
+    command: ["sh", "-c", "i=0; while :; do echo \"south line $$i lorem ipsum dolor\"; i=$$((i+1)); [ $$((i % 20)) -eq 0 ] && sleep 0.1; done"]
+'
+
+test_multilogs() {
+  start_fresh multilogs
+  deploy_fixture ghostdock-e2e-multilogs "$MULTILOGS"
+  run multilogs
+}
+
 test_live() {
   # The live test changes a running stack from outside GhostDock.
   start_fresh live
@@ -275,7 +292,7 @@ test_host() {
 
 # With no arguments, everything; otherwise just the named tests, in order.
 TESTS=("$@")
-[[ ${#TESTS[@]} -eq 0 ]] && TESTS=(smoke perf deploy accounts tokens offline stall git discover shell live logs cleanup roam tabs jank layout host a11y mcp)
+[[ ${#TESTS[@]} -eq 0 ]] && TESTS=(smoke perf deploy accounts tokens offline stall git discover shell live logs multilogs cleanup roam tabs jank layout host a11y mcp)
 for t in "${TESTS[@]}"; do
   "test_$t"
 done

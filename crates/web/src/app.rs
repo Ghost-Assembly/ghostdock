@@ -19,6 +19,7 @@ use crate::events;
 use crate::git_stack::NewGitStackForm;
 use crate::host::Host;
 use crate::logs::ContainerLogs;
+use crate::multilogs::LogsAcross;
 use crate::new_stack::NewStackForm;
 use crate::reference::ApiReference;
 use crate::resources::ContainerResources;
@@ -143,6 +144,7 @@ fn Shell(user: User, session: RwSignal<Session>) -> impl IntoView {
                     <Route path=path!("/sources") view=Sources />
                     <Route path=path!("/repos/:id/discover") view=DiscoverStacks />
                     <Route path=path!("/updates") view=Updates />
+                    <Route path=path!("/logs") view=LogsAcross />
                     <Route path=path!("/host") view=Host />
                     <Route path=path!("/cleanup") view=Cleanup />
                     <Route path=path!("/activity") view=Activity />
@@ -201,6 +203,7 @@ fn Nav() -> impl IntoView {
             <span class="nav-brand">"GhostDock"</span>
             {item("/", "Stacks", "layers", &["/stacks", "/containers", "/deployments"])}
             {item("/updates", "Updates", "refresh-cw", &[])}
+            {item("/logs", "Logs", "scroll-text", &[])}
             {item("/host", "Host", "server", &[])}
             {item(
                 "/settings",
