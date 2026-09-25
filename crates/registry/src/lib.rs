@@ -7,11 +7,10 @@ pub mod challenge;
 pub mod reference;
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use reference::Reference;
-use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 /// Header a registry returns the canonical digest in.
@@ -75,8 +74,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct Client {
     http: reqwest::Client,
     min_interval: Duration,
-    /// When each registry was last asked, so one host cannot be flooded.
-    last_request: Arc<Mutex<HashMap<String, Instant>>>,
+    /// When each registry may next be asked, so one host cannot be flooded.
+    next_request: Arc<Mutex<HashMap<String, Instant>>>,
     /// Overrides the scheme and host, for testing against a local server.
     base_override: Option<String>,
 }
@@ -97,7 +96,7 @@ impl Client {
                 .build()
                 .unwrap_or_default(),
             min_interval: DEFAULT_MIN_INTERVAL,
-            last_request: Arc::new(Mutex::new(HashMap::new())),
+            next_request: Arc::default(),
             base_override: None,
         }
     }
@@ -237,14 +236,25 @@ impl Client {
     }
 
     /// Waits until this registry may be asked again.
+    ///
+    /// Takes the next free slot for the registry and sleeps without the
+    /// lock, so a wait owed to one registry never holds up another, and
+    /// requests to one registry made together still go one interval apart.
     async fn pace(&self, registry: &str) {
-        let mut last = self.last_request.lock().await;
-        if let Some(previous) = last.get(registry) {
-            let elapsed = previous.elapsed();
-            if elapsed < self.min_interval {
-                tokio::time::sleep(self.min_interval - elapsed).await;
-            }
-        }
-        last.insert(registry.to_owned(), Instant::now());
+        let slot = {
+            let mut next = self
+                .next_request
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let now = Instant::now();
+            let slot = next
+                .get(registry)
+                .copied()
+                .filter(|at| *at > now)
+                .unwrap_or(now);
+            next.insert(registry.to_owned(), slot + self.min_interval);
+            slot
+        };
+        tokio::time::sleep_until(slot).await;
     }
 }
