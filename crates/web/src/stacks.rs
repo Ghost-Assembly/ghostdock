@@ -18,7 +18,7 @@ use crate::events::use_events;
 use crate::load::Load;
 use crate::screen::Screen;
 use crate::status::usage;
-use crate::ui::Row;
+use crate::ui::{Icon, Row, Topbar};
 
 /// How alarming a state is. Drives ordering, so the worst is read first.
 fn severity(state: StackState) -> u8 {
@@ -45,7 +45,7 @@ fn state_word(state: StackState) -> &'static str {
     }
 }
 
-/// Serialised form used by the CSS to colour the state bar.
+/// Serialised form used by the CSS to draw the state bar.
 fn state_key(state: StackState) -> &'static str {
     match state {
         StackState::Running => "running",
@@ -147,10 +147,9 @@ pub fn Stacks() -> impl IntoView {
     let stacks = Memo::new(move |_| load.with(|l| l.ready().cloned().unwrap_or_default()));
 
     view! {
-        <header class="topbar">
-            <h1 class="wordmark">"Stacks"</h1>
-            <a class="topbar-link" href="/stacks/new">"New stack"</a>
-        </header>
+        <Topbar title="Stacks">
+            <a class="topbar-link" href="/stacks/new"><Icon name="plus" />"New stack"</a>
+        </Topbar>
 
         {move || {
             problems
@@ -255,7 +254,9 @@ struct RowData {
 impl RowData {
     fn of(stack: &Stack) -> Self {
         let detail = if stack.managed.as_ref().is_some_and(|m| m.busy) {
-            "working".to_owned()
+            // Still says how it is, beside the bar that shows it: a deploy
+            // under way does not make a stack healthy or unhealthy.
+            format!("{}, working", state_word(stack.state))
         } else if stack.managed.is_none() {
             // Says why there is nothing to tap, rather than leaving a dead row.
             format!("{}, not managed by GhostDock", state_word(stack.state))
@@ -318,6 +319,7 @@ fn StackRows(rows: Memo<Vec<RowData>>, figures: RwSignal<Option<Now>>) -> impl I
                 <Row
                     state=row.state
                     name=row.project.clone()
+                    ident=true
                     href=row.id.map(|id| format!("/stacks/{id}"))
                     detail=row.detail
                     count=row.count

@@ -10,7 +10,7 @@ use shared::update::StackUpdate;
 use crate::api;
 use crate::load::Load;
 use crate::screen::Screen;
-use crate::ui::Row;
+use crate::ui::{Icon, Row, Topbar};
 
 #[component]
 pub fn Updates() -> impl IntoView {
@@ -70,20 +70,20 @@ pub fn Updates() -> impl IntoView {
     };
 
     view! {
-        <header class="topbar">
-            <h1 class="wordmark">"Updates"</h1>
+        <Topbar title="Updates">
             <button
                 class="topbar-link"
                 type="button"
                 on:click=check_all
                 disabled=move || progress.get().is_some() || load.with(|l| l.ready().is_none())
             >
+                <Icon name="refresh-cw" />
                 {move || match progress.get() {
                     Some((done, total)) => format!("Checked {done} of {total}"),
                     None => "Check now".to_owned(),
                 }}
             </button>
-        </header>
+        </Topbar>
 
         <Show when=move || failures.with(|f| !f.is_empty())>
             <p class="notice" role="alert">
@@ -204,9 +204,14 @@ fn UpdateRows(updates: Vec<StackUpdate>, state: &'static str) -> impl IntoView {
                                 "not checked yet".to_owned()
                             }
                         });
-                    let badge = if update.auto_apply { "auto" } else { "" };
                     let href = format!("/stacks/{}", update.stack.id);
-                    view! { <Row state href name=update.stack.name detail count=badge /> }
+                    let name = update.stack.name;
+                    if update.auto_apply {
+                        view! { <Row state href name detail count="auto" count_icon="repeat" /> }
+                            .into_any()
+                    } else {
+                        view! { <Row state href name detail /> }.into_any()
+                    }
                 })
                 .collect_view()}
         </ul>

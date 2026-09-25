@@ -8,12 +8,12 @@ use shared::metrics::{
 };
 
 use crate::api;
-use crate::charts::{Measure, UsageBar};
+use crate::charts::{Measure, UsageBar, fullness};
 use crate::events::use_events;
 use crate::load::Load;
 use crate::resources::{Charts, RangePicker, SizingRows};
 use crate::screen::Screen;
-use crate::ui::{ErrorNotice, Row};
+use crate::ui::{ErrorNotice, Row, Topbar};
 
 const TOP: usize = 5;
 
@@ -73,9 +73,7 @@ pub fn Host() -> impl IntoView {
     });
 
     view! {
-        <header class="topbar">
-            <h1 class="wordmark">"Host"</h1>
-        </header>
+        <Topbar title="Host" />
         <ErrorNotice error />
         <Show when=move || unavailable.get()>
             <p class="notice" role="alert">"The Docker daemon is not answering; container figures will return with it."</p>
@@ -89,24 +87,37 @@ pub fn Host() -> impl IntoView {
         <ul class="rows">
             {move || disks.get().into_iter().map(|d| {
                 let (used, total) = (d.reading.mem.unwrap_or(0), d.reading.mem_limit.unwrap_or(0));
+                let (_, state, words) = fullness(used, total);
+                let mut detail = format!("{} of {}", format_bytes(used), format_bytes(total));
+                if !words.is_empty() {
+                    detail = format!("{detail}, {words}");
+                }
+                let label = format!("Disk {}", d.key);
                 view! {
                     <li class="row row-usage">
-                        <span class="row-name">{d.key}</span>
-                        <span class="row-detail">{format!("{} of {}", format_bytes(used), format_bytes(total))}</span>
-                        <UsageBar used total />
+                        <span class="row-name row-id">{d.key}</span>
+                        <span class="row-detail">
+                            {(state != "running").then(|| view! { <span class="state-mark" data-state=state></span> })}
+                            {detail}
+                        </span>
+                        <UsageBar used total label />
                     </li>
                 }
             }).collect_view()}
         </ul>
-        <p class="entry-note">"More disks appear when mounted read-only under /host/disks."</p>
+        <p class="entry-note">
+            "Filling up past 80% used, nearly full past 90%. More disks appear when \
+             mounted read-only under /host/disks."
+        </p>
 
         <Show when=move || networks.with(|n| !n.is_empty())>
             <h2 class="group-heading">"Networks"</h2>
             <ul class="rows">
                 {move || networks.get().into_iter().map(|n| view! {
                     <Row
-                        state="running"
+                        state="none"
                         name=n.key
+                        ident=true
                         detail=format!(
                             "in {}, out {}",
                             format_rate(n.reading.net_rx.unwrap_or(0.0)),
@@ -147,10 +158,12 @@ fn top_rows(list: &[Current], key: fn(&Current) -> f64, label: fn(&Current) -> S
     view! {
         <ul class="rows rows-top">
             {top.into_iter().take(TOP).map(|c| view! {
+                // Using the most is a ranking, not a state.
                 <Row
-                    state="running"
-                    href=format!("/containers/{}/resources", c.key)
+                    state="none"
+                    href=format!("/containers/{}/resources?from=/host", c.key)
                     name=c.key.clone()
+                    ident=true
                     detail=c.project.clone().unwrap_or_default()
                     count=label(c)
                 />

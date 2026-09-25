@@ -13,7 +13,7 @@ use shared::logs::{LogLine, Resume, Stream};
 use web_sys::{CloseEvent, MessageEvent};
 
 use crate::screen::Screen;
-use crate::ui::{ErrorNotice, Field, OutputLine, pinned, to_bottom};
+use crate::ui::{ErrorNotice, Field, Icon, OutputLine, Topbar, came_from, pinned, to_bottom};
 use crate::{api, socket};
 
 /// Most lines kept on screen. Following a chatty container for an hour would
@@ -208,10 +208,7 @@ pub fn ContainerLogs() -> impl IntoView {
     };
 
     view! {
-        <header class="topbar">
-            <h1 class="wordmark">"Logs"</h1>
-            <a class="topbar-link" href="/">"Back"</a>
-        </header>
+        <Topbar title="Logs" back=came_from("/") />
 
         <ErrorNotice error />
 
@@ -251,6 +248,7 @@ pub fn ContainerLogs() -> impl IntoView {
             href=move || format!("/api/v1/hosts/{}/containers/{}/logs.txt", api::HOST, id.get())
             download=move || format!("{}.log", shared::short(&id.get(), 12))
         >
+            <Icon name="download" />
             "Download"
         </a>
 
@@ -283,7 +281,7 @@ pub fn ContainerLogs() -> impl IntoView {
 
         // Only when there is something in it, or something about to be.
         <Show when=move || loaded.get() && (following.get() || matching.with(|m| !m.is_empty()))>
-            <pre class="log log-tall" node_ref=pane>
+            <pre class="log log-tall" node_ref=pane tabindex="0">
                 <For each=move || shown.get() key=|seq| *seq let:seq>
                     {
                         row_for(seq).map(|line| view! {

@@ -9,7 +9,7 @@ use crate::events::use_events;
 use crate::load::Load;
 use crate::screen::Screen;
 use crate::status::Outcome;
-use crate::ui::route_id;
+use crate::ui::{Topbar, route_id};
 
 #[component]
 pub fn DeploymentView() -> impl IntoView {
@@ -67,11 +67,18 @@ pub fn DeploymentView() -> impl IntoView {
         });
     }
 
+    // Back to the stack it ran on, once that is known.
+    let back = Memo::new(move |_| {
+        detail.with(|d| {
+            d.ready().map_or_else(
+                || "/".to_owned(),
+                |d| format!("/stacks/{}", d.deployment.stack_id),
+            )
+        })
+    });
+
     view! {
-        <header class="topbar">
-            <h1 class="wordmark">"Output"</h1>
-            <a class="topbar-link" href="/">"Back"</a>
-        </header>
+        <Topbar title="Output" back />
 
         {move || match detail.get() {
             Load::Loading => view! { <p class="state-note">"Loading"</p> }.into_any(),
@@ -97,7 +104,7 @@ pub fn DeploymentView() -> impl IntoView {
                         <p class="verdict-line" data-tone=outcome.tone>{outcome.heading()}</p>
                         <p class="verdict-count">{when}</p>
                     </section>
-                    <pre class="log" aria-live="polite">{log}</pre>
+                    <pre class="log" aria-live="polite" tabindex="0">{log}</pre>
                 }
                 .into_any()
             }

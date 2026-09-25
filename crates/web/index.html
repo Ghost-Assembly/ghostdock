@@ -4,7 +4,41 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark light" />
-    <meta name="theme-color" content="#171b21" />
+    <!-- The ground of each theme, as style.css sets it. -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f2f4f7" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#171b21" />
+    <!-- A theme chosen on this device (Settings, Appearance; src/theme.rs).
+         Applied here, before the first paint, so a forced theme never flashes
+         the other one. The app only sets data-theme; this stores each change
+         and recolors the browser's chrome to match. Storage can be refused
+         (a private window, say); the page then follows the device. -->
+    <script>
+      (function () {
+        var key = 'ghostdock.theme';
+        var root = document.documentElement;
+        var grounds = { light: '#f2f4f7', dark: '#171b21' };
+        var forced = function (t) { return t === 'light' || t === 'dark'; };
+        var paint = function (t) {
+          document.querySelectorAll('meta[name="theme-color"]').forEach(function (m) {
+            var own = m.media.indexOf('light') >= 0 ? 'light' : 'dark';
+            m.setAttribute('content', grounds[forced(t) ? t : own]);
+          });
+        };
+        try {
+          var stored = localStorage.getItem(key);
+          if (forced(stored)) root.setAttribute('data-theme', stored);
+        } catch (e) {}
+        paint(root.getAttribute('data-theme'));
+        new MutationObserver(function () {
+          var t = root.getAttribute('data-theme');
+          try {
+            if (forced(t)) localStorage.setItem(key, t);
+            else localStorage.removeItem(key);
+          } catch (e) {}
+          paint(t);
+        }).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
+      })();
+    </script>
     <meta name="description" content="Container stacks, readable at a glance." />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
@@ -29,6 +63,9 @@
     />
   </head>
   <body>
+    <!-- Said until the app can say it; src/main.rs removes it. -->
+    <p class="boot" id="boot">Loading GhostDock…</p>
+
     <!-- Keeps the app itself available offline. Browsers allow this only
          over HTTPS or on localhost; elsewhere it quietly does nothing and the
          app works as before, online only. -->

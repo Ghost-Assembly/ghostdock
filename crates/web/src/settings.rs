@@ -1,4 +1,4 @@
-//! Account and host details.
+//! Account and host details, and how this device shows them.
 
 use leptos::prelude::*;
 use shared::auth::User;
@@ -8,7 +8,8 @@ use crate::api;
 use crate::app::Session;
 use crate::load::Load;
 use crate::screen::Screen;
-use crate::ui::{ErrorNotice, Row};
+use crate::theme::{self, Theme};
+use crate::ui::{Choices, ErrorNotice, Row, Topbar};
 
 #[component]
 pub fn Settings(user: User, session: RwSignal<Session>) -> impl IntoView {
@@ -16,6 +17,7 @@ pub fn Settings(user: User, session: RwSignal<Session>) -> impl IntoView {
     let screen = Screen::new();
     let signing_out = RwSignal::new(false);
     let sign_out_error = RwSignal::new(None::<String>);
+    let theme = RwSignal::new(theme::current());
 
     screen.load(async move {
         info.set(Load::from(api::host_info().await));
@@ -50,21 +52,19 @@ pub fn Settings(user: User, session: RwSignal<Session>) -> impl IntoView {
     };
 
     view! {
-        <header class="topbar">
-            <h1 class="wordmark">"Settings"</h1>
-        </header>
+        <Topbar title="Settings" />
 
         <h2 class="group-heading">"Account"</h2>
         <ul class="rows">
-            <Row state="running" name=user.username detail="Signed in" />
+            <Row state="none" name=user.username detail="Signed in" />
             <Row
-                state="running"
+                state="none"
                 href="/accounts"
                 name="Accounts and password"
                 detail="Who can sign in, and your own password"
             />
             <Row
-                state="running"
+                state="none"
                 href="/tokens"
                 name="API tokens"
                 detail="Let another program act for you, within limits"
@@ -102,6 +102,7 @@ pub fn Settings(user: User, session: RwSignal<Session>) -> impl IntoView {
                         <Row
                             state=if reachable { "running" } else { "unhealthy" }
                             name=detail.name
+                            ident=true
                             detail=detail
                                 .unreachable_reason
                                 .unwrap_or_else(|| format!("Docker {version}"))
@@ -116,7 +117,7 @@ pub fn Settings(user: User, session: RwSignal<Session>) -> impl IntoView {
         <h2 class="group-heading">"Sources"</h2>
         <ul class="rows">
             <Row
-                state="running"
+                state="none"
                 href="/sources"
                 name="Repositories and credentials"
                 detail="Where Git-backed stacks come from"
@@ -126,7 +127,7 @@ pub fn Settings(user: User, session: RwSignal<Session>) -> impl IntoView {
         <h2 class="group-heading">"Maintenance"</h2>
         <ul class="rows">
             <Row
-                state="stopped"
+                state="none"
                 href="/cleanup"
                 name="Reclaim disk space"
                 detail="Images no container is using"
@@ -136,12 +137,29 @@ pub fn Settings(user: User, session: RwSignal<Session>) -> impl IntoView {
         <h2 class="group-heading">"Activity"</h2>
         <ul class="rows">
             <Row
-                state="running"
+                state="none"
                 href="/activity"
                 name="What has been done"
                 detail="Sign-ins, deploys, and changes"
             />
         </ul>
+
+        <h2 class="group-heading">"Appearance"</h2>
+        <Choices
+            class="choices"
+            label="Appearance"
+            options=Theme::ALL.iter().map(|t| (t.label(), Some(t.icon()))).collect()
+            chosen=Signal::derive(move || {
+                Theme::ALL.iter().position(|t| *t == theme.get()).unwrap_or_default()
+            })
+            on_choose=Callback::new(move |i: usize| {
+                if let Some(choice) = Theme::ALL.get(i) {
+                    theme::choose(*choice);
+                    theme.set(*choice);
+                }
+            })
+        />
+        <p class="entry-note">"Kept on this device only. System follows the device's own setting."</p>
 
         <h2 class="group-heading">"Session"</h2>
         <ErrorNotice error=sign_out_error />

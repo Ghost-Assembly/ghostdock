@@ -117,6 +117,12 @@ design changed first.
   well-maintained crate (1000+ stars, active, not deprecated). Owning a small
   piece of code beats a thin dependency.
 - Copy in the UI is short, specific and says what will happen. Colour means
-  state and nothing else.
+  state and nothing else, and state is never shown by color alone: each has
+  a bar shape and an icon too, and words where there is room. A row with no
+  state gets the neutral bar (`state="none"`).
+- The UI meets WCAG 2 AA in both themes: text 4.5:1 and controls 3:1
+  against the ground (the ratios are in `style.css`), touch targets 44px,
+  every control named. `tests/e2e/a11y.mjs` runs axe over the main screens
+  in both themes at both sizes.
 - Nothing personal: no hostnames, stack names, users or setups from anyone's
   real environment in code, tests, fixtures or docs.

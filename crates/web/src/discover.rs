@@ -8,7 +8,7 @@ use shared::source::{DiscoverRequest, DiscoveredStatus, Discovery, ImportRequest
 use crate::api;
 use crate::confirm::Confirm;
 use crate::screen::Screen;
-use crate::ui::{ErrorNotice, Field, Row, route_id, toggle};
+use crate::ui::{ErrorNotice, Field, Row, Topbar, route_id, toggle};
 
 #[component]
 pub fn DiscoverStacks() -> impl IntoView {
@@ -150,12 +150,9 @@ pub fn DiscoverStacks() -> impl IntoView {
     };
 
     view! {
-        <header class="topbar">
-            <h1 class="wordmark">"Repository"</h1>
-            <a class="topbar-link" href="/sources">"Back"</a>
-        </header>
+        <Topbar title="Repository" back="/sources" />
 
-        <p class="entry-note field-mono">{move || repo_url.get()}</p>
+        <p class="entry-note entry-id">{move || repo_url.get()}</p>
 
         <ErrorNotice error />
 
@@ -257,7 +254,7 @@ pub fn DiscoverStacks() -> impl IntoView {
             <ul class="rows">
                 {done.created.into_iter().map(|s| view! {
                     <Row
-                        state="stopped"
+                        state="none"
                         href=format!("/stacks/{}", s.id)
                         name=s.name
                         detail=s.git.map(|g| g.compose_path).unwrap_or_default()

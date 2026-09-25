@@ -69,6 +69,7 @@ leptos_router = "0.8.15"
 gloo-net = { version = "0.7.0", default-features = false, features = ["http", "json"] }
 web-sys = "0.3.105"
 wasm-bindgen = "0.2.128"
+wasm-bindgen-futures = "0.4.78"
 
 # Secrets at rest. Never hand-rolled: XChaCha20-Poly1305 from RustCrypto,
 # whose 192-bit random nonce makes per-value nonces safe without a counter.

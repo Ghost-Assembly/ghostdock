@@ -17,7 +17,7 @@ if ! command -v brotli >/dev/null; then
 fi
 
 shopt -s nullglob
-for file in "$dir"/*.wasm "$dir"/*.js "$dir"/*.css "$dir"/*.html "$dir"/*.webmanifest "$dir"/*.svg; do
+for file in "$dir"/*.wasm "$dir"/*.js "$dir"/*.css "$dir"/*.html "$dir"/*.webmanifest "$dir"/*.svg "$dir"/icons/*.svg; do
   brotli --force --quality=11 --output="$file.br" "$file"
   gzip --force --best --keep --no-name "$file"
 done

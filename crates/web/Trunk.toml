@@ -1,3 +1,8 @@
+# Minified in release builds: the stylesheet and the page are counted by the
+# transfer budget in tests/e2e/perf.mjs, and minifying halves the stylesheet.
+[build]
+minify = "on_release"
+
 [[hooks]]
 stage = "post_build"
 command = "bash"

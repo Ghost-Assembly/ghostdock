@@ -12,7 +12,7 @@ use crate::api;
 use crate::confirm::Confirm;
 use crate::load::Load;
 use crate::screen::Screen;
-use crate::ui::{ErrorNotice, Field, Row, route_id};
+use crate::ui::{ErrorNotice, Field, Row, Topbar, route_id};
 
 /// A name the server will take: letters, digits and underscores, not
 /// starting with a digit. Checked here too, so a typo is explained before
@@ -107,10 +107,7 @@ pub fn StackEnvironment() -> impl IntoView {
     };
 
     view! {
-        <header class="topbar">
-            <h1 class="wordmark">"Environment"</h1>
-            <a class="topbar-link" href=move || format!("/stacks/{}", id.get())>"Back"</a>
-        </header>
+        <Topbar title="Environment" back=Signal::derive(move || format!("/stacks/{}", id.get())) />
 
         <ErrorNotice error />
 
@@ -136,10 +133,11 @@ pub fn StackEnvironment() -> impl IntoView {
                         .into_iter()
                         .map(|name| {
                             view! {
-                                <Row state="running" name=name.clone() detail="set">
+                                <Row state="none" name=name.clone() ident=true detail="set">
                                     <Confirm
                                         label="Remove"
                                         confirm="Remove it"
+                                        subject=name.clone()
                                         row=true
                                         disabled=Signal::derive(move || removing.get())
                                         on_confirm=remove(name)

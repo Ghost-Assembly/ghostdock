@@ -6,7 +6,7 @@ use shared::source::{NewGitStack, Repo};
 
 use crate::api;
 use crate::screen::Screen;
-use crate::ui::{ErrorNotice, Field};
+use crate::ui::{ErrorNotice, Field, Topbar};
 
 #[component]
 pub fn NewGitStackForm() -> impl IntoView {
@@ -26,10 +26,9 @@ pub fn NewGitStackForm() -> impl IntoView {
     });
 
     view! {
-        <header class="topbar">
-            <h1 class="wordmark">"Stack from Git"</h1>
+        <Topbar title="Stack from Git">
             <a class="topbar-link" href="/">"Cancel"</a>
-        </header>
+        </Topbar>
 
         <ErrorNotice error=load_error />
 

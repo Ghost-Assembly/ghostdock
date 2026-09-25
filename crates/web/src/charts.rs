@@ -215,6 +215,28 @@ fn reading_at(points: &[Reading], picked: Option<i64>) -> Option<&Reading> {
         .or_else(|| points.last())
 }
 
+/// Within a tenth of its limit: the point at which a chart turns amber.
+fn near_limit(value: Option<f64>, limit: Option<f64>) -> bool {
+    matches!((value, limit), (Some(v), Some(l)) if l > 0.0 && v > 0.9 * l)
+}
+
+/// The point a key moves the readout to, from `at` among `len` points:
+/// arrows step one, Page keys a tenth of the way, Home and End to either
+/// end. `None` for any other key, which the chart leaves alone.
+fn key_step(key: &str, at: usize, len: usize) -> Option<usize> {
+    let last = len.checked_sub(1)?;
+    let page = (len / 10).max(1);
+    Some(match key {
+        "ArrowLeft" | "ArrowDown" => at.saturating_sub(1),
+        "ArrowRight" | "ArrowUp" => at.saturating_add(1).min(last),
+        "PageDown" => at.saturating_sub(page),
+        "PageUp" => at.saturating_add(page).min(last),
+        "Home" => 0,
+        "End" => last,
+        _ => return None,
+    })
+}
+
 /// Where a chart's lines fall, worked out once per change of its points.
 /// The paths are shared rather than copied, since several parts of the
 /// chart read this on every tick.
@@ -268,28 +290,54 @@ pub fn Chart(
                 max,
                 t0,
                 t1,
-                near_limit: matches!(
-                    (latest, limit),
-                    (Some(v), Some(l)) if l > 0.0 && v > 0.9 * l
-                ),
+                near_limit: near_limit(latest, limit),
             }
         })
     });
 
-    let readout = move || {
+    // What the readout says, and which point it says it of. Near the limit
+    // is said in words as well as shown in amber.
+    let shown = Memo::new(move |_| {
         let picked = picked.get();
         points.with(|pts| match reading_at(pts, picked) {
             Some(r) => {
-                let (avg, peak, _) = measure.values(r);
+                let (avg, peak, limit) = measure.values(r);
                 let value = avg.map_or_else(|| "nothing running".to_owned(), |v| measure.format(v));
                 let peak = peak
                     .filter(|p| avg.is_some_and(|a| *p > a * 1.05))
                     .map(|p| format!(", peak {}", measure.format(p)))
                     .unwrap_or_default();
-                format!("{value}{peak}")
+                let near =
+                    near_limit(avg, limit) || (picked.is_none() && geometry.with(|g| g.near_limit));
+                let near = if near { ", near its limit" } else { "" };
+                let at = pts.iter().position(|p| p.t == r.t).unwrap_or_default();
+                (at, r.t, format!("{value}{peak}{near}"))
             }
-            None => "no figures yet".to_owned(),
+            None => (0, 0, "no figures yet".to_owned()),
         })
+    });
+    // Signals rather than closures in the view: each closure there is
+    // compiled into code of its own, and bytes are what the budget counts.
+    let readout = Signal::derive(move || shown.with(|s| s.2.clone()));
+    // How far along the range the point is, as a percentage: the words in
+    // aria-valuetext say which moment it is.
+    let now = Signal::derive(move || {
+        let len = points.with(Vec::len).max(2) - 1;
+        (shown.with(|s| s.0) * 100 / len).to_string()
+    });
+    let spoken = Signal::derive(move || {
+        shown.with(|s| format!("{}, {}", time_label(s.1, range.get()), s.2))
+    });
+
+    // The arrow keys read the chart point by point, as a pointer does.
+    let on_key = move |ev: leptos::ev::KeyboardEvent| {
+        let len = points.with_untracked(Vec::len);
+        let at = shown.with_untracked(|s| s.0);
+        let Some(next) = key_step(&ev.key(), at, len) else {
+            return;
+        };
+        ev.prevent_default();
+        picked.set(points.with_untracked(|pts| pts.get(next).map(|r| r.t)));
     };
 
     let on_move = move |ev: leptos::ev::PointerEvent| {
@@ -322,8 +370,16 @@ pub fn Chart(
                 <span class="chart-value">{readout}</span>
             </figcaption>
             <div class="chart-plot">
-                <svg viewBox="0 0 600 160" preserveAspectRatio="none" role="img"
+                // A slider over the points, to assistive technology and to
+                // the keyboard: each step reads out one moment.
+                <svg viewBox="0 0 600 160" preserveAspectRatio="none" role="slider" tabindex="0"
                     aria-label=measure.title()
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-valuenow=now
+                    aria-valuetext=spoken
+                    on:keydown=on_key
+                    on:blur=move |_| picked.set(None)
                     on:pointermove=on_move
                     on:pointerleave=move |_| picked.set(None)>
                     <path class="chart-area" d=move || geometry.with(|g| Arc::clone(&g.area)) />
@@ -363,25 +419,44 @@ pub fn Sparkline(values: Vec<Option<f64>>) -> impl IntoView {
     }
 }
 
-/// How full something is. Amber past 80 %, red past 90 %.
-#[component]
-pub fn UsageBar(used: u64, total: u64) -> impl IntoView {
+/// How full something is, as a share of one, and what that means: the bar
+/// state and the words that say it. Amber past 80 %, red past 90 %.
+#[must_use]
+pub fn fullness(used: u64, total: u64) -> (f64, &'static str, &'static str) {
     #[allow(clippy::cast_precision_loss)]
     let share = if total > 0 {
-        used as f64 / total as f64
+        (used as f64 / total as f64).clamp(0.0, 1.0)
     } else {
         0.0
     };
-    let state = if share > 0.9 {
-        "unhealthy"
+    let (state, words) = if share > 0.9 {
+        ("unhealthy", "nearly full")
     } else if share > 0.8 {
-        "degraded"
+        ("degraded", "filling up")
     } else {
-        "running"
+        ("running", "")
+    };
+    (share, state, words)
+}
+
+/// How full something is, as a meter. Drawn with a width attribute rather
+/// than an inline style, which a strict content security policy refuses.
+#[component]
+pub fn UsageBar(used: u64, total: u64, #[prop(into)] label: String) -> impl IntoView {
+    let (share, state, words) = fullness(used, total);
+    let percent = share * 100.0;
+    let said = if words.is_empty() {
+        format!("{percent:.0}% used")
+    } else {
+        format!("{percent:.0}% used, {words}")
     };
     view! {
-        <div class="usage" data-state=state role="meter" aria-valuenow=format!("{:.0}", share * 100.0) aria-valuemin="0" aria-valuemax="100">
-            <div class="usage-fill" style=format!("width: {:.1}%", share * 100.0)></div>
+        <div class="usage" data-state=state role="meter" aria-label=label
+            aria-valuenow=format!("{percent:.0}") aria-valuemin="0" aria-valuemax="100"
+            aria-valuetext=said>
+            <svg viewBox="0 0 100 1" preserveAspectRatio="none" aria-hidden="true">
+                <rect class="usage-fill" width=format!("{percent:.1}") height="1" />
+            </svg>
         </div>
     }
 }
@@ -493,6 +568,50 @@ mod tests {
         points.remove(0);
         assert_eq!(reading_at(&points, picked).map(|r| r.t), Some(25));
         assert_eq!(reading_at(&points, None).map(|r| r.t), Some(25));
+    }
+
+    #[test]
+    fn keys_step_through_the_points_and_stop_at_the_ends() {
+        assert_eq!(key_step("ArrowLeft", 5, 10), Some(4));
+        assert_eq!(key_step("ArrowRight", 5, 10), Some(6));
+        assert_eq!(key_step("ArrowLeft", 0, 10), Some(0), "stops at the first");
+        assert_eq!(key_step("ArrowRight", 9, 10), Some(9), "stops at the last");
+        assert_eq!(key_step("Home", 5, 10), Some(0));
+        assert_eq!(key_step("End", 5, 10), Some(9));
+        assert_eq!(key_step("PageDown", 50, 300), Some(20));
+        assert_eq!(key_step("PageUp", 290, 300), Some(299));
+        assert_eq!(key_step("Enter", 5, 10), None, "other keys are left alone");
+        assert_eq!(
+            key_step("Home", 0, 0),
+            None,
+            "an empty chart has nowhere to go"
+        );
+    }
+
+    #[test]
+    fn near_the_limit_is_past_nine_tenths_of_it() {
+        assert!(near_limit(Some(95.0), Some(100.0)));
+        assert!(!near_limit(Some(90.0), Some(100.0)));
+        assert!(
+            !near_limit(Some(95.0), None),
+            "no limit, nothing to be near"
+        );
+        assert!(!near_limit(None, Some(100.0)));
+        assert!(!near_limit(Some(1.0), Some(0.0)));
+    }
+
+    #[test]
+    fn fullness_is_said_in_words_as_well_as_color() {
+        assert_eq!(fullness(50, 100), (0.5, "running", ""));
+        assert_eq!(fullness(85, 100).1, "degraded");
+        assert_eq!(fullness(85, 100).2, "filling up");
+        assert_eq!(fullness(95, 100).2, "nearly full");
+        assert_eq!(
+            fullness(1, 0),
+            (0.0, "running", ""),
+            "an unknown size is not full"
+        );
+        assert!((fullness(200, 100).0 - 1.0).abs() < 1e-9, "never past full");
     }
 
     #[test]

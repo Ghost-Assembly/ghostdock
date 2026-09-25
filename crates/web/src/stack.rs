@@ -19,7 +19,7 @@ use crate::load::Load;
 use crate::resources::{Charts, ContainerFigureRows, RangePicker};
 use crate::screen::Screen;
 use crate::status::Outcome;
-use crate::ui::{ErrorNotice, OutputLine, Row, route_id};
+use crate::ui::{ErrorNotice, OutputLine, Row, Topbar, route_id};
 
 /// Lines kept in the live pane.
 ///
@@ -315,12 +315,12 @@ pub fn StackDetail() -> impl IntoView {
     let from_git = move || stack.with(|s| s.as_ref().map(|s| s.git.is_some()));
 
     view! {
-        <header class="topbar">
-            <h1 class="wordmark">
-                {move || stack.with(|s| s.as_ref().map_or_else(|| "Stack".to_owned(), |s| s.name.clone()))}
-            </h1>
-            <a class="topbar-link" href="/">"Back"</a>
-        </header>
+        <Topbar
+            title=Signal::derive(move || {
+                stack.with(|s| s.as_ref().map_or_else(|| "Stack".to_owned(), |s| s.name.clone()))
+            })
+            back="/"
+        />
 
         <ErrorNotice error=load_error />
         <ErrorNotice error />
@@ -345,7 +345,8 @@ pub fn StackDetail() -> impl IntoView {
 
         <Show when=move || live.with(|l| !l.is_empty())>
             <h2 class="group-heading">"Output"</h2>
-            <pre class="log" aria-live="polite">
+            // Focusable, so its long lines can be scrolled from a keyboard.
+            <pre class="log" aria-live="polite" tabindex="0">
                 <For each=move || live.get() key=|(seq, _)| *seq let:line>
                     <OutputLine text=line.1.to_string() />
                 </For>
@@ -383,7 +384,7 @@ pub fn StackDetail() -> impl IntoView {
                 <p class="entry-note">"Nothing is running for this stack."</p>
             }
             .into_any(),
-            Load::Ready(list) => view! { <ContainerRows containers=list /> }.into_any(),
+            Load::Ready(list) => view! { <ContainerRows containers=list stack=id.get() /> }.into_any(),
         }}
 
         // Only once the stack is known: its name is the series' subject.
@@ -395,7 +396,11 @@ pub fn StackDetail() -> impl IntoView {
                 range=resources_range
                 measures=&[Measure::Cpu, Measure::Memory]
             />
-            <ContainerFigureRows project=resources_project.into() range=resources_range />
+            <ContainerFigureRows
+                project=resources_project.into()
+                range=resources_range
+                from=Signal::derive(move || format!("/stacks/{}", id.get()))
+            />
         </Show>
 
         </div>
@@ -441,8 +446,9 @@ pub fn StackDetail() -> impl IntoView {
                 view! {
                     <ul class="rows">
                         <Row
-                            state="running"
+                            state="none"
                             name=git.repo_url
+                            ident=true
                             detail=format!("{} on {}", git.compose_path, git.git_ref)
                         />
                     </ul>
@@ -499,7 +505,9 @@ pub fn StackDetail() -> impl IntoView {
 /// The logs link is the reason this list exists: when something is wrong,
 /// the next thing anyone wants is what the container said about it.
 #[component]
-fn ContainerRows(containers: Vec<Container>) -> impl IntoView {
+fn ContainerRows(containers: Vec<Container>, stack: i64) -> impl IntoView {
+    // Each screen these lead to comes back here, not to the board.
+    let from = format!("?from=/stacks/{stack}");
     view! {
         <ul class="rows">
             {containers
@@ -515,16 +523,22 @@ fn ContainerRows(containers: Vec<Container>) -> impl IntoView {
                         "stopped"
                     };
                     let asides = vec![
-                        (format!("/containers/{}/shell", container.id), "Shell"),
-                        (format!("/containers/{}/resources", container.name), "Resources"),
+                        (format!("/containers/{}/shell{from}", container.id), "Shell", "terminal"),
+                        (
+                            format!("/containers/{}/resources{from}", container.name),
+                            "Resources",
+                            "chart-line",
+                        ),
                     ];
                     view! {
                         <Row
                             state
-                            href=format!("/containers/{}/logs", container.id)
+                            href=format!("/containers/{}/logs{from}", container.id)
                             name=container.name
+                            ident=true
                             detail=container.status
                             count="Logs"
+                            count_icon="scroll-text"
                             asides
                         />
                     }

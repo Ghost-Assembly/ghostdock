@@ -2,7 +2,7 @@
 
 use leptos::prelude::*;
 use leptos_router::components::{Route, Router, Routes};
-use leptos_router::hooks::{use_location, use_navigate};
+use leptos_router::hooks::use_location;
 use leptos_router::path;
 use shared::auth::User;
 
@@ -28,6 +28,7 @@ use crate::sources::Sources;
 use crate::stack::StackDetail;
 use crate::stacks::Stacks;
 use crate::tokens::Tokens;
+use crate::ui::Icon;
 use crate::updates::Updates;
 
 /// Who the viewer is, as far as the client knows.
@@ -82,8 +83,10 @@ pub fn App() -> impl IntoView {
 
     view! {
         {move || match session.get() {
+            // The words of the placeholder in index.html, which this
+            // replaces, so the swap is not seen.
             Session::Loading => view! {
-                <p class="state-note">"Loading"</p>
+                <p class="boot">"Loading GhostDock…"</p>
             }
             .into_any(),
             Session::Unreachable(message) => view! {
@@ -164,28 +167,31 @@ fn Shell(user: User, session: RwSignal<Session>) -> impl IntoView {
 /// Bottom navigation.
 ///
 /// Only surfaces destinations that exist. A nav item leading to "coming soon"
-/// spends a user's attention on nothing.
+/// spends a user's attention on nothing. Links rather than buttons: each is
+/// a place, which can be opened in another tab and is announced as one.
 #[component]
 fn Nav() -> impl IntoView {
     let location = use_location();
-    let navigate = use_navigate();
 
     // A section stays current on every screen within it: a stack's page is
     // still under Stacks, repositories and tokens under Settings.
-    let item = move |href: &'static str, label: &'static str, within: &'static [&'static str]| {
-        let navigate = navigate.clone();
+    let item = move |href: &'static str,
+                     label: &'static str,
+                     icon: &'static str,
+                     within: &'static [&'static str]| {
         let current = Memo::new(move |_| {
             let path = location.pathname.get();
             path == href || within.iter().any(|prefix| path.starts_with(prefix))
         });
         view! {
-            <button
+            <a
                 class="nav-item"
+                href=href
                 aria-current=move || if current.get() { Some("page") } else { None }
-                on:click=move |_| navigate(href, Default::default())
             >
+                <Icon name=icon />
                 {label}
-            </button>
+            </a>
         }
     };
 
@@ -193,12 +199,13 @@ fn Nav() -> impl IntoView {
         <nav class="nav" aria-label="Sections">
             // Shown only where the navigation is a sidebar.
             <span class="nav-brand">"GhostDock"</span>
-            {item("/", "Stacks", &["/stacks", "/containers", "/deployments"])}
-            {item("/updates", "Updates", &[])}
-            {item("/host", "Host", &[])}
+            {item("/", "Stacks", "layers", &["/stacks", "/containers", "/deployments"])}
+            {item("/updates", "Updates", "refresh-cw", &[])}
+            {item("/host", "Host", "server", &[])}
             {item(
                 "/settings",
                 "Settings",
+                "settings",
                 &["/sources", "/repos", "/cleanup", "/activity", "/accounts", "/tokens"],
             )}
         </nav>
