@@ -16,7 +16,7 @@ use web_sys::{CloseEvent, MessageEvent};
 
 use crate::load::Load;
 use crate::screen::Screen;
-use crate::ui::{ErrorNotice, Field, pinned, to_bottom};
+use crate::ui::{ErrorNotice, Field, Topbar, pinned, to_bottom};
 use crate::{api, socket};
 
 /// Most lines kept. Following a chatty host for an hour would otherwise
@@ -481,9 +481,7 @@ pub fn LogsAcross() -> impl IntoView {
     };
 
     view! {
-        <header class="topbar">
-            <h1 class="wordmark">"Logs"</h1>
-        </header>
+        <Topbar title="Logs" />
 
         <details class="mlog-picker">
             <summary class="mlog-summary">
@@ -641,7 +639,7 @@ pub fn LogsAcross() -> impl IntoView {
         }}
 
         <Show when=move || loaded.get() && (following.get() || matching.with(|m| !m.is_empty()))>
-            <pre class="log log-tall mlog" node_ref=feed.pane>
+            <pre class="log log-tall mlog" node_ref=feed.pane tabindex="0" aria-label="Log lines">
                 <For each=move || shown.get() key=|seq| *seq let:seq>
                     {row_for(seq).map(|row| view! { <Line row needle /> })}
                 </For>

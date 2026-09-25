@@ -45,6 +45,7 @@ const SCREENS = [
   ['tokens', '/tokens', 'form'],
   ['activity', '/activity', '.rows .row-name'],
   ['logs', logs, 'pre.log .log-line'],
+  ['multilogs', '/logs', '.mlog-summary'],
 ];
 
 const VIEWPORTS = [
