@@ -693,6 +693,89 @@ async fn a_git_stack_needs_a_ref_and_a_real_repository() {
 }
 
 #[tokio::test]
+async fn a_repository_url_git_would_misread_is_refused() {
+    // Each of these makes git run a command or reach a transport GhostDock
+    // never offered. None may be stored.
+    let mut c = Client::signed_in().await;
+    for url in [
+        "--upload-pack=touch /tmp/ghostdock-pwned",
+        "ext::sh -c touch% /tmp/ghostdock-pwned",
+        "ext::sh",
+        "fd::3",
+        "ftp://example.invalid/r.git",
+        "/srv/git/local-path.git",
+        "https://example.invalid/r .git",
+    ] {
+        let (status, body) = c
+            .send(
+                "POST",
+                "/api/v1/repos",
+                Some(json!({ "url": url, "credential_id": null })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{url} was accepted");
+        assert_eq!(body["code"], json!("bad_request"));
+    }
+    let (_, repos) = c.send("GET", "/api/v1/repos", None).await;
+    assert_eq!(repos, json!([]), "nothing was stored");
+}
+
+#[tokio::test]
+async fn a_password_in_a_repository_url_is_refused_with_where_it_belongs() {
+    let mut c = Client::signed_in().await;
+    let (status, body) = c
+        .send(
+            "POST",
+            "/api/v1/repos",
+            Some(
+                json!({ "url": "https://me:hunter2@example.invalid/r.git", "credential_id": null }),
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let message = body["message"].as_str().unwrap();
+    assert!(message.contains("Credentials"), "{message}");
+    assert!(!message.contains("hunter2"), "the password was echoed back");
+}
+
+#[tokio::test]
+async fn a_ref_git_would_read_as_an_option_is_refused() {
+    let (_dir, url) = discovery_repo();
+    let mut c = Client::signed_in().await;
+    let repo = c.repo(&url, None).await;
+    let bad = "--upload-pack=touch /tmp/ghostdock-pwned";
+
+    let (status, _) = c
+        .send(
+            "POST",
+            "/api/v1/hosts/1/stacks/git",
+            Some(json!({
+                "name": "A", "repo_id": repo, "git_ref": bad, "compose_path": "a.yml"
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "registering");
+
+    for route in ["discover", "import"] {
+        let (status, body) = c
+            .send(
+                "POST",
+                &format!("/api/v1/repos/{repo}/{route}"),
+                Some(json!({ "git_ref": bad, "pattern": null, "paths": ["compose.yaml"] })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{route}: {body}");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap()
+                .contains("cannot start with -"),
+            "{route}: {body}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn an_environment_can_be_set_and_its_names_listed_but_never_its_values() {
     let mut c = Client::signed_in().await;
     let (_, stack) = c

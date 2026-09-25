@@ -121,11 +121,9 @@ async fn create_repo(
     Json(new): Json<NewRepo>,
 ) -> Result<Json<Repo>, ApiError> {
     let url = new.url.trim();
-    if url.is_empty() {
-        return Err(ApiError::BadRequest(
-            "Give the repository a URL.".to_owned(),
-        ));
-    }
+    // Refused here, where the person typing it can fix it. git would read
+    // some URLs as options or as commands to run.
+    domain::source::check_repo_url(url).map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     if let Some(id) = new.credential_id
         && state.store.credential_secret(id).await?.is_none()
@@ -228,11 +226,7 @@ async fn create_git_stack(
     }
 
     let git_ref = new.git_ref.trim();
-    if git_ref.is_empty() {
-        return Err(ApiError::BadRequest(
-            "Name the branch or tag, for example refs/heads/main.".to_owned(),
-        ));
-    }
+    domain::source::check_git_ref(git_ref).map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     // Refuse a path that leaves the repository here, rather than at deploy
     // time: the person typing it is the one who can fix it.

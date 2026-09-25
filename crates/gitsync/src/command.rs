@@ -46,6 +46,12 @@ pub fn env(credential: Option<&Credential>) -> Vec<(String, String)> {
         ("GIT_CONFIG_NOSYSTEM".to_owned(), "1".to_owned()),
         ("GIT_CONFIG_GLOBAL".to_owned(), "/dev/null".to_owned()),
         ("GIT_ASKPASS".to_owned(), String::new()),
+        // Only the transports GhostDock offers, for the remote and for any
+        // submodule it names. `ext::` in particular runs a command.
+        (
+            "GIT_ALLOW_PROTOCOL".to_owned(),
+            "file:git:http:https:ssh".to_owned(),
+        ),
     ];
 
     if let Some(credential) = credential {
@@ -76,6 +82,9 @@ pub fn ls_remote(url: &str, reference: &str) -> Vec<String> {
     vec![
         "ls-remote".to_owned(),
         "--exit-code".to_owned(),
+        // Whatever follows is an operand, never an option: a URL of
+        // `--upload-pack=<command>` would otherwise run the command.
+        "--end-of-options".to_owned(),
         url.to_owned(),
         reference.to_owned(),
     ]
@@ -106,6 +115,7 @@ pub fn fetch(dir: &Path, url: &str, reference: &str) -> Vec<String> {
         "1".to_owned(),
         // A force fetch, so a rewritten branch does not wedge the mirror.
         "--force".to_owned(),
+        "--end-of-options".to_owned(),
         url.to_owned(),
         reference.to_owned(),
     ]
