@@ -30,6 +30,53 @@ pub struct Logs {
     pub truncated: bool,
 }
 
+/// One line from one of several containers read together.
+///
+/// Labelled with where it came from, since lines from many containers are
+/// read as one stream and a reader has to tell them apart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaggedLine {
+    /// The container's name.
+    pub container: String,
+    /// The compose project it belongs to, if any.
+    pub stack: Option<String>,
+    pub stream: Stream,
+    /// Timestamp as the daemon reported it, when it did.
+    pub at: Option<String>,
+    pub text: String,
+}
+
+impl TaggedLine {
+    /// The line without its label, as one container's log holds it.
+    #[must_use]
+    pub fn untagged(&self) -> LogLine {
+        LogLine {
+            stream: self.stream,
+            at: self.at.clone(),
+            text: self.text.clone(),
+        }
+    }
+}
+
+/// Several containers' output merged into one, oldest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergedLogs {
+    /// The containers read, by name.
+    pub containers: Vec<String>,
+    pub lines: Vec<TaggedLine>,
+    /// True when older output exists beyond what was returned.
+    pub truncated: bool,
+}
+
+/// What a socket following several containers sends: a line, or word that
+/// lines were dropped because the reader could not keep up.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum LiveLog {
+    Line(TaggedLine),
+    Skipped { skipped: u64 },
+}
+
 /// Picking up a followed log where a snapshot of it ended.
 ///
 /// The daemon's `since` is whole seconds, so following from the newest line

@@ -250,6 +250,29 @@ const TOOLS: &[Tool] = &[
         },
     },
     Tool {
+        name: "logs_across",
+        title: "Read logs across containers",
+        description: "The latest output of several containers merged into one timeline, each line labelled with its container: every running container, one stack's, or named ones, at most 50. Optionally only lines containing some text or only stderr.",
+        permission: Permission::LogsView,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        input: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "all": { "type": "boolean", "description": "Every running container on the host." },
+                    "stack": { "type": "string", "description": "A registered stack's name or numeric id: all its containers." },
+                    "containers": { "type": "array", "items": { "type": "string" }, "maxItems": 50, "description": "Container names or ids." },
+                    "lines": { "type": "integer", "minimum": 1, "maximum": 1000, "description": "How many of each container's latest lines to read. Default 100." },
+                    "contains": { "type": "string", "description": "Only lines containing this text, ignoring case." },
+                    "errors_only": { "type": "boolean", "description": "Only lines written to stderr." },
+                },
+                "description": "Give exactly one of all, stack or containers.",
+            })
+        },
+    },
+    Tool {
         name: "run_command",
         title: "Run a command in a container",
         description: "Runs one command with sh -c inside a running container and returns its output and exit code. As powerful as a shell on the host. Waits up to the timeout; a command still running then is left to finish.",
@@ -749,6 +772,7 @@ pub(super) async fn run(tool: &Tool, api: &Api, args: &Value) -> Result<Value, S
             Ok(outcome(&detail, lines))
         }
         "container_logs" => container_logs(api, args).await,
+        "logs_across" => logs_across(api, args).await,
         "run_command" => run_command(api, args).await,
         "list_env" => {
             let s = stack(api, args).await?;
@@ -1151,6 +1175,100 @@ async fn container_logs(api: &Api, args: &Value) -> Result<Value, String> {
         lines.len(),
         if logs["truncated"] == json!(true) {
             " (older output exists; raise lines to see more)"
+        } else {
+            ""
+        },
+        if needle.is_some() || errors_only {
+            ", after filtering"
+        } else {
+            ""
+        },
+    );
+    Ok(Value::String(format!("{header}\n{}", lines.join("\n"))))
+}
+
+/// Which containers `logs_across` reads, as the endpoint's query. Names go
+/// into the query, so each is checked to be only a name first.
+async fn across_selection(api: &Api, args: &Value) -> Result<String, String> {
+    let all = args.get("all").and_then(Value::as_bool) == Some(true);
+    let stack_given = args.get("stack").is_some_and(|v| !v.is_null());
+    let containers = args.get("containers").filter(|v| !v.is_null());
+    match (all, stack_given, containers) {
+        (true, false, None) => Ok("all".to_owned()),
+        (false, true, None) => Ok(format!("stack={}", stack(api, args).await?.id)),
+        (false, false, Some(list)) => {
+            let list = list
+                .as_array()
+                .ok_or("containers is a list of container names")?;
+            let mut names = Vec::with_capacity(list.len());
+            for name in list {
+                let name = name
+                    .as_str()
+                    .map(str::trim)
+                    .ok_or("containers is a list of container names")?;
+                if !domain::logs::is_container_name(name) {
+                    return Err(format!("not a container name: {name}"));
+                }
+                names.push(name);
+            }
+            if names.is_empty() {
+                return Err("name at least one container".to_owned());
+            }
+            Ok(format!("containers={}", names.join(",")))
+        }
+        _ => Err("give exactly one of all, stack or containers".to_owned()),
+    }
+}
+
+async fn logs_across(api: &Api, args: &Value) -> Result<Value, String> {
+    let selection = across_selection(api, args).await?;
+    let tail = number(args, "lines", 100, 1000);
+    let logs = api
+        .get(&format!("/hosts/{HOST}/logs?{selection}&tail={tail}"))
+        .await?;
+    let needle = args
+        .get("contains")
+        .and_then(Value::as_str)
+        .map(str::to_lowercase);
+    let errors_only = args.get("errors_only").and_then(Value::as_bool) == Some(true);
+    let lines: Vec<String> = logs["lines"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|l| !errors_only || l["stream"] == json!("stderr"))
+        .filter_map(|l| {
+            let text = l["text"].as_str()?;
+            if needle
+                .as_ref()
+                .is_some_and(|n| !text.to_lowercase().contains(n))
+            {
+                return None;
+            }
+            let marker = if l["stream"] == json!("stderr") {
+                "err"
+            } else {
+                "out"
+            };
+            Some(format!(
+                "{} {marker} {} {text}",
+                l["container"].as_str().unwrap_or("?"),
+                l["at"].as_str().unwrap_or("")
+            ))
+        })
+        .collect();
+    let read: Vec<&str> = logs["containers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let header = format!(
+        "{} lines from {} containers ({}){}{}",
+        lines.len(),
+        read.len(),
+        read.join(", "),
+        if logs["truncated"] == json!(true) {
+            "; older output exists, raise lines to see more"
         } else {
             ""
         },

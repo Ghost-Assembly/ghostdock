@@ -379,6 +379,12 @@ pub async fn container_logs(container: &str) -> Result<Logs> {
     .await
 }
 
+/// Several containers' latest output merged by time. `selection` is the
+/// query naming them: `all`, `stack=<id>` or `containers=<a,b>`.
+pub async fn logs_across(selection: &str) -> Result<shared::logs::MergedLogs> {
+    get(&format!("/hosts/{HOST}/logs?{selection}")).await
+}
+
 pub async fn cleanup_preview() -> Result<CleanupPreview> {
     get(&format!("/hosts/{HOST}/cleanup")).await
 }

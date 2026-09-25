@@ -263,12 +263,24 @@ async fn a_months_minutes_come_back_as_300_points_quickly_with_the_spike() {
         m.write_minute(&rows).await.unwrap();
     }
     let month = 30 * 86_400;
-    let started = std::time::Instant::now();
-    let got = m
-        .read_series(id, Resolution::Minute, 0, month, 300)
-        .await
-        .unwrap();
-    let took = started.elapsed();
+    // Timed against reading the same month's rows, on the same machine,
+    // as the sizing test is: a fixed budget held here and failed on a
+    // slower CI runner. Best of three each.
+    let mut took = std::time::Duration::MAX;
+    let mut reading = std::time::Duration::MAX;
+    let mut got = Vec::new();
+    for _ in 0..3 {
+        let started = std::time::Instant::now();
+        got = m
+            .read_series(id, Resolution::Minute, 0, month, 300)
+            .await
+            .unwrap();
+        took = took.min(started.elapsed());
+        let started = std::time::Instant::now();
+        let rows = m.read(id, Resolution::Minute, 0, month).await.unwrap();
+        reading = reading.min(started.elapsed());
+        assert!(rows.len() > 40_000);
+    }
     assert!(!got.is_empty() && got.len() <= 300, "{}", got.len());
     let peak = got.iter().filter_map(|p| p.cpu_max).fold(0.0, f64::max);
     assert!((peak - 9.0).abs() < 1e-9, "the spike survives: {peak}");
@@ -276,7 +288,11 @@ async fn a_months_minutes_come_back_as_300_points_quickly_with_the_spike() {
         (got[0].cpu.unwrap() - 0.5).abs() < 1e-9,
         "averages stay averages"
     );
-    assert!(took < std::time::Duration::from_millis(50), "took {took:?}");
+    eprintln!("series {took:?}, reading the rows {reading:?}");
+    assert!(
+        took * 4 < reading,
+        "the series took {took:?}, reading the rows took {reading:?}"
+    );
 
     let stack = m
         .read_stack_series("busy", Resolution::Minute, 0, month, 300)

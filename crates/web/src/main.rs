@@ -36,6 +36,7 @@ mod git_stack;
 mod host;
 mod load;
 mod logs;
+mod multilogs;
 mod new_stack;
 mod reference;
 mod resources;

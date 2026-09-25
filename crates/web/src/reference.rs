@@ -68,7 +68,7 @@ pub fn ApiReference() -> impl IntoView {
                     .map(|tool| view! {
                         <details>
                             <summary>{tool.name}</summary>
-                            <pre class="snippet">{tool.input_schema}</pre>
+                            <pre class="snippet" tabindex="0">{tool.input_schema}</pre>
                         </details>
                     })
                     .collect_view()}

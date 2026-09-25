@@ -747,3 +747,65 @@ async fn a_metrics_subject_cannot_carry_its_own_query() {
         assert_eq!(body["result"]["isError"], json!(true), "{subject}: {body}");
     }
 }
+
+#[tokio::test]
+async fn logs_across_containers_is_a_tool_for_logs_view() {
+    let s = setup().await;
+    let viewer = s.token(&["host.view"]).await;
+    let names = tool_names(&s.rpc(&viewer, "tools/list", json!({})).await);
+    assert!(!names.contains(&"logs_across".to_owned()), "{names:?}");
+
+    let reader = s.token(&["logs.view"]).await;
+    let names = tool_names(&s.rpc(&reader, "tools/list", json!({})).await);
+    assert!(names.contains(&"logs_across".to_owned()), "{names:?}");
+
+    // Through the API: no daemon here, and the API says so.
+    let body = s
+        .tool(
+            &reader,
+            "logs_across",
+            json!({ "containers": ["web-1", "db-1"] }),
+        )
+        .await;
+    assert_eq!(body["result"]["isError"], json!(true), "{body}");
+    let text = body["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("503"), "{text}");
+    let body = s.tool(&reader, "logs_across", json!({ "all": true })).await;
+    let text = body["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("503"), "{text}");
+
+    // The API's own refusal, passed on.
+    let many: Vec<String> = (0..51).map(|i| format!("c{i}")).collect();
+    let body = s
+        .tool(&reader, "logs_across", json!({ "containers": many }))
+        .await;
+    assert_eq!(body["result"]["isError"], json!(true), "{body}");
+    let text = body["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("50"), "{text}");
+}
+
+#[tokio::test]
+async fn logs_across_containers_cannot_carry_its_own_query() {
+    let s = setup().await;
+    let reader = s.token(&["logs.view"]).await;
+    for arguments in [
+        json!({}),
+        json!({ "all": true, "containers": ["a"] }),
+        json!({ "containers": [] }),
+        json!({ "containers": ["a&all"] }),
+        json!({ "containers": ["web-1,../x"] }),
+        json!({ "containers": ["a?x=1"] }),
+        json!({ "containers": ["a#x"] }),
+        json!({ "containers": [7] }),
+        json!({ "containers": "web-1" }),
+    ] {
+        let body = s.tool(&reader, "logs_across", arguments.clone()).await;
+        assert_eq!(
+            body["result"]["isError"],
+            json!(true),
+            "{arguments}: {body}"
+        );
+        let text = body["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(!text.contains("503"), "{arguments} reached the API: {text}");
+    }
+}
