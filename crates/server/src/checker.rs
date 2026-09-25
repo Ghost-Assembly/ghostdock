@@ -8,7 +8,6 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use gitsync::Git;
-use gitsync::command::Credential;
 use shared::container::Container;
 use shared::deployment::{Action, RegisteredStack, Trigger};
 use shared::update::{ImageStatus, UpdateStatus};
@@ -135,7 +134,10 @@ impl Checker {
             return (None, None);
         };
 
-        let credential = self.credential_for(git.repo_id).await;
+        let credential = crate::runner::credential_for(&self.store, git.repo_id)
+            .await
+            .ok()
+            .flatten();
         match self
             .git
             .remote_head(&git.repo_url, &git.git_ref, credential.as_ref())
@@ -146,16 +148,6 @@ impl Checker {
             // would be indistinguishable from everything being current.
             Err(e) => (None, Some(e.to_string())),
         }
-    }
-
-    async fn credential_for(&self, repo_id: i64) -> Option<Credential> {
-        let repo = self.store.repo_by_id(repo_id).await.ok()??;
-        let credential_id = repo.credential_id?;
-        self.store
-            .credential_secret(credential_id)
-            .await
-            .ok()?
-            .map(|(username, secret)| Credential { username, secret })
     }
 
     /// Compares what each running image is against what its tag points at.

@@ -23,6 +23,7 @@ pub mod origin;
 pub mod revocation;
 pub mod runner;
 pub mod session_store;
+pub mod socket;
 pub mod sources;
 pub mod stacks;
 pub mod state;

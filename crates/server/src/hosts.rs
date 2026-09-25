@@ -34,11 +34,7 @@ async fn host_info(
     State(state): State<AppState>,
     Path(host_id): Path<i64>,
 ) -> Result<Json<HostInfo>, ApiError> {
-    let host = state
-        .store
-        .host_by_id(host_id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
+    let host = known(&state, host_id).await?;
     let client = state.docker.as_ref().ok_or(ApiError::DaemonUnavailable)?;
     let mut info = client.host_info(host.id, host.name).await;
     info.problems = state.problems.as_ref().clone();
@@ -50,7 +46,7 @@ async fn list_containers(
     State(state): State<AppState>,
     Path(host_id): Path<i64>,
 ) -> Result<Json<Vec<Container>>, ApiError> {
-    let client = client_for(&state, host_id).await?;
+    let client = daemon(&state, host_id).await?;
     Ok(Json(client.list_containers().await?))
 }
 
@@ -64,7 +60,7 @@ async fn list_stacks(
     State(state): State<AppState>,
     Path(host_id): Path<i64>,
 ) -> Result<Json<Vec<Stack>>, ApiError> {
-    let client = client_for(&state, host_id).await?;
+    let client = daemon(&state, host_id).await?;
     let containers = client.list_containers().await?;
 
     let managed = state
@@ -89,13 +85,18 @@ async fn list_stacks(
     Ok(Json(domain::stack::merge(containers, managed).stacks))
 }
 
-/// Resolves the host then its client, so an unknown host id is a 404 rather
-/// than being silently served from the one daemon we happen to have.
-async fn client_for(state: &AppState, host_id: i64) -> Result<&docker::Client, ApiError> {
+/// The host `host_id` names, or a 404.
+pub(crate) async fn known(state: &AppState, host_id: i64) -> Result<Host, ApiError> {
     state
         .store
         .host_by_id(host_id)
         .await?
-        .ok_or(ApiError::NotFound)?;
+        .ok_or(ApiError::NotFound)
+}
+
+/// Resolves the host then its daemon, so an unknown host id is a 404 rather
+/// than being silently served from the one daemon we happen to have.
+pub(crate) async fn daemon(state: &AppState, host_id: i64) -> Result<&docker::Client, ApiError> {
+    known(state, host_id).await?;
     state.docker.as_ref().ok_or(ApiError::DaemonUnavailable)
 }

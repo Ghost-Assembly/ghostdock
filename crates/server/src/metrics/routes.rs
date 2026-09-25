@@ -18,21 +18,12 @@ pub fn routes() -> Router<AppState> {
         .route("/hosts/{host_id}/sizing", get(sizing))
 }
 
-async fn host(state: &AppState, host_id: i64) -> Result<(), ApiError> {
-    state
-        .store
-        .host_by_id(host_id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
-    Ok(())
-}
-
 async fn now(
     _p: Authorized<perm::HostView>,
     State(state): State<AppState>,
     Path(host_id): Path<i64>,
 ) -> Result<Json<Now>, ApiError> {
-    host(&state, host_id).await?;
+    crate::hosts::known(&state, host_id).await?;
     Ok(Json(Now::clone(&state.sampler.now())))
 }
 
@@ -48,7 +39,7 @@ async fn series(
     Path(host_id): Path<i64>,
     Query(q): Query<SeriesQuery>,
 ) -> Result<Json<Series>, ApiError> {
-    host(&state, host_id).await?;
+    crate::hosts::known(&state, host_id).await?;
     let text = q.subject.ok_or_else(|| ApiError::BadRequest("Say which subject: host, container:<name>, disk:<path>, network:<name> or stack:<project>.".to_owned()))?;
     let target = Target::parse(&text)
         .ok_or_else(|| ApiError::BadRequest(format!("Not a subject: {text}.")))?;
@@ -69,7 +60,7 @@ async fn sizing(
     State(state): State<AppState>,
     Path(host_id): Path<i64>,
 ) -> Result<Json<Vec<shared::metrics::Recommendation>>, ApiError> {
-    host(&state, host_id).await?;
+    crate::hosts::known(&state, host_id).await?;
     Ok(Json(state.sampler.sizing().await?))
 }
 
@@ -86,7 +77,7 @@ async fn containers(
     Path(host_id): Path<i64>,
     Query(q): Query<ContainersQuery>,
 ) -> Result<Json<Vec<shared::metrics::ContainerFigures>>, ApiError> {
-    host(&state, host_id).await?;
+    crate::hosts::known(&state, host_id).await?;
     let project = q
         .project
         .filter(|p| !p.trim().is_empty())
