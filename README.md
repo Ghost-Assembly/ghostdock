@@ -151,7 +151,12 @@ base64 (`openssl rand -base64 32`).
 Anything that can reach the Docker socket is root on the host, so treat an
 GhostDock account the same way. Every account is an administrator. Accounts are
 added and removed under Settings, and changing your password signs out your
-other devices.
+other devices. After repeated failed sign-ins, a username (or, in larger
+numbers, an address) is refused for 15 minutes.
+
+Repository URLs are `https`, `http`, `ssh`, `git` or `file` URLs, or
+`user@host:path`. A password never goes in the URL: add it under Credentials
+and attach it to the repository.
 
 ### API tokens
 
