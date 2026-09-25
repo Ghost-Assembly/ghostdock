@@ -1324,3 +1324,9 @@ select.field-input {
     column-gap: 0.5rem;
   }
 }
+
+/* The pane follows its newest line itself. Scroll anchoring would move it
+ * up by whatever is trimmed from the top, leaving it short of the bottom. */
+.mlog {
+  overflow-anchor: none;
+}

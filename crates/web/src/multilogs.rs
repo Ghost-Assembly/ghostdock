@@ -23,8 +23,20 @@ use crate::{api, socket};
 /// grow the page until the phone gives up.
 const MAX_LINES: usize = 5_000;
 
-/// Most lines in the page at once; the rest stay searchable in memory.
-const ON_SCREEN: usize = 1_000;
+/// Most lines in the page at once; the rest stay searchable in memory and
+/// in the download. Half the single-container view's: each line here also
+/// carries its container's name and its search marks, and clearing a
+/// search lays every one of them out again at once.
+const ON_SCREEN: usize = 500;
+
+/// Most matches in the page while searching. Every match is redrawn with
+/// its marks when the search changes, and a thousand of them took a slow
+/// phone past its frame budget on one keystroke.
+const MATCHES_ON_SCREEN: usize = 200;
+
+/// How long typing must pause before a search runs, so each keystroke only
+/// echoes and the redraw happens once.
+const SEARCH_AFTER: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// Most lines added in one frame. A burst, or the lines held while paused,
 /// arrive over several frames instead of stalling one.
@@ -224,6 +236,11 @@ struct Feed {
     /// Arrived while paused.
     held: StoredValue<Vec<TaggedLine>>,
     held_count: RwSignal<usize>,
+    /// Whether the reader is following the newest line. Set from the
+    /// pane's own scroll events, not measured before each batch: lines
+    /// laid out between one scroll to the bottom and the next batch made
+    /// a measurement say the reader had scrolled away when they had not.
+    follow: StoredValue<bool>,
     pane: NodeRef<Pre>,
     screen: Screen,
 }
@@ -259,7 +276,7 @@ impl Feed {
             });
             self.held_count.set(count);
         } else if !batch.is_empty() {
-            let at_bottom = pinned(self.pane);
+            let at_bottom = self.follow.get_value();
             self.push(batch);
             if at_bottom {
                 let pane = self.pane;
@@ -269,6 +286,15 @@ impl Feed {
         if self.pending.with_value(|p| !p.is_empty()) {
             self.schedule();
         }
+    }
+
+    /// The reader moved the pane themselves: follow only if they are at
+    /// the bottom once the scroll has happened.
+    fn reader_scrolled(self) {
+        let pane = self.pane;
+        let follow = self.follow;
+        self.screen
+            .next_frame(move || follow.set_value(pinned(pane)));
     }
 
     fn push(self, incoming: Vec<TaggedLine>) {
@@ -294,6 +320,7 @@ impl Feed {
     /// newest: resuming is asking to follow again.
     fn resume(self) {
         self.paused.set(false);
+        self.follow.set_value(true);
         let pane = self.pane;
         self.screen.next_frame(move || to_bottom(pane));
         let held = std::mem::take(&mut *self.held.write_value());
@@ -336,6 +363,7 @@ pub fn LogsAcross() -> impl IntoView {
         paused: RwSignal::new(false),
         held: StoredValue::new(Vec::new()),
         held_count: RwSignal::new(0),
+        follow: StoredValue::new(true),
         pane: NodeRef::new(),
         screen,
     };
@@ -343,6 +371,8 @@ pub fn LogsAcross() -> impl IntoView {
     let error = RwSignal::new(None::<String>);
     let note = RwSignal::new(None::<&'static str>);
     let skipped = RwSignal::new(0_u64);
+    // What is typed, and the search it becomes once typing pauses.
+    let typed = RwSignal::new(String::new());
     let filter = RwSignal::new(String::new());
     let errors_only = RwSignal::new(false);
     let following = RwSignal::new(false);
@@ -446,6 +476,13 @@ pub fn LogsAcross() -> impl IntoView {
             })
         })
     });
+    let on_screen = move || {
+        if needle.with(String::is_empty) {
+            ON_SCREEN
+        } else {
+            MATCHES_ON_SCREEN
+        }
+    };
     // A new search, or none, starts from the newest line: what was on
     // screen before is gone, and a pane left scrolled to the top of the
     // new lines would stop following them.
@@ -454,10 +491,23 @@ pub fn LogsAcross() -> impl IntoView {
         errors_only.track();
         screen.next_frame(move || to_bottom(feed.pane));
     });
+    // Bumped by each search, so its lines are drawn afresh with their
+    // marks. A line then never redraws itself: re-marking every line on the
+    // page as a search changed was what took a slow phone past its frame
+    // budget.
+    let generation = Memo::new(move |previous: Option<&u32>| {
+        needle.track();
+        previous.map_or(0, |g| g.wrapping_add(1))
+    });
     let shown = Memo::new(move |_| {
+        let limit = on_screen();
+        let generation = generation.get();
         matching.with(|all| {
-            let skip = all.len().saturating_sub(ON_SCREEN);
-            all.iter().skip(skip).copied().collect::<Vec<_>>()
+            let skip = all.len().saturating_sub(limit);
+            all.iter()
+                .skip(skip)
+                .map(|seq| (*seq, generation))
+                .collect::<Vec<_>>()
         })
     });
     let row_for = move |seq: u64| {
@@ -563,8 +613,16 @@ pub fn LogsAcross() -> impl IntoView {
                 autocapitalize="none"
                 spellcheck="false"
                 placeholder="error, timeout, 500"
-                prop:value=move || filter.get()
-                on:input=move |ev| filter.set(event_target_value(&ev))
+                prop:value=move || typed.get()
+                on:input=move |ev| {
+                    let value = event_target_value(&ev);
+                    typed.set(value.clone());
+                    screen.after(SEARCH_AFTER, move || {
+                        if typed.with_untracked(|now| *now == value) {
+                            filter.set(value);
+                        }
+                    });
+                }
             />
         </Field>
 
@@ -630,8 +688,11 @@ pub fn LogsAcross() -> impl IntoView {
             }
             let count = matching.with(Vec::len);
             let lines_word = if count == 1 { "line" } else { "lines" };
-            let summary = if count > ON_SCREEN {
-                format!("The latest {ON_SCREEN} of {count} {lines_word}. Search looks through all of them.")
+            let limit = on_screen();
+            let summary = if count > limit && limit == MATCHES_ON_SCREEN {
+                format!("The latest {limit} of {count} matching {lines_word}.")
+            } else if count > limit {
+                format!("The latest {limit} of {count} {lines_word}. Search looks through all of them.")
             } else {
                 format!("{count} {lines_word}")
             };
@@ -639,9 +700,27 @@ pub fn LogsAcross() -> impl IntoView {
         }}
 
         <Show when=move || loaded.get() && (following.get() || matching.with(|m| !m.is_empty()))>
-            <pre class="log log-tall mlog" node_ref=feed.pane tabindex="0" aria-label="Log lines">
-                <For each=move || shown.get() key=|seq| *seq let:seq>
-                    {row_for(seq).map(|row| view! { <Line row needle /> })}
+            <pre
+                class="log log-tall mlog"
+                node_ref=feed.pane
+                tabindex="0"
+                aria-label="Log lines"
+                // Reaching the bottom, however it happened, follows again;
+                // only the reader's own scrolling stops it. A scroll the page
+                // caused, as lines were laid out or trimmed, once read as the
+                // reader leaving and stranded the pane at the top.
+                on:scroll=move |_| {
+                    if pinned(feed.pane) {
+                        feed.follow.set_value(true);
+                    }
+                }
+                on:wheel=move |_| feed.reader_scrolled()
+                on:touchmove=move |_| feed.reader_scrolled()
+                on:keydown=move |_| feed.reader_scrolled()
+                on:pointerup=move |_| feed.reader_scrolled()
+            >
+                <For each=move || shown.get() key=|key| *key let:key>
+                    {row_for(key.0).map(|row| view! { <Line row needle=needle.get_untracked() /> })}
                 </For>
             </pre>
         </Show>
@@ -651,7 +730,7 @@ pub fn LogsAcross() -> impl IntoView {
 /// One line: its container's name in a column, then what it said, with
 /// what the search matched marked.
 #[component]
-fn Line(row: Row, needle: Memo<String>) -> impl IntoView {
+fn Line(row: Row, needle: String) -> impl IntoView {
     let class = if row.line.stream == Stream::Stderr {
         "log-line mlog-line log-stderr"
     } else {
@@ -659,19 +738,16 @@ fn Line(row: Row, needle: Memo<String>) -> impl IntoView {
     };
     let name = label(&row.line).to_owned();
     let title = row.line.container.clone();
-    let text = move || {
-        needle
-            .with(|n| segments(&row.line.text, &row.lower, n))
-            .into_iter()
-            .map(|(text, hit)| {
-                if hit {
-                    view! { <mark class="mlog-match">{text}</mark> }.into_any()
-                } else {
-                    text.into_any()
-                }
-            })
-            .collect_view()
-    };
+    let text = segments(&row.line.text, &row.lower, &needle)
+        .into_iter()
+        .map(|(text, hit)| {
+            if hit {
+                view! { <mark class="mlog-match">{text}</mark> }.into_any()
+            } else {
+                text.into_any()
+            }
+        })
+        .collect_view();
     view! {
         <div class=class>
             <span class="mlog-name" title=title>{name}</span>
