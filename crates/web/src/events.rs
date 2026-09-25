@@ -245,7 +245,7 @@ fn connect(link: Link, attempt: u32, was_open: bool) {
             let Some(text) = ev.data().as_string() else {
                 return;
             };
-            match serde_json::from_str::<ServerEvent>(&text) {
+            match decode(&text) {
                 Ok(event) => dispatcher.dispatch(&event),
                 // A server and client from different builds; not a reason
                 // to drop the connection.
@@ -314,4 +314,150 @@ fn kick(link: &Link) {
 #[must_use]
 pub fn use_events() -> Option<Events> {
     use_context::<Events>()
+}
+
+/// Reads one event off the socket: the same JSON `ServerEvent`'s own derive
+/// reads, and the same value.
+///
+/// Not through that derive. An internally tagged enum, as `ServerEvent` is
+/// on the wire, is read by buffering the whole event into serde's generic
+/// `Content` tree and reading every type in it a second way, from that
+/// tree; for the metrics event that is a second copy of the code for `Now`
+/// and everything inside it. Reading the tag first and then the event again
+/// as the one variant it names uses only the code that reading the API's
+/// answers already needs. The round-trip test below holds it to the derive.
+fn decode(text: &str) -> serde_json::Result<ServerEvent> {
+    use serde::Deserialize;
+    use shared::checks::CheckStatus;
+    use shared::deployment::Action;
+    use shared::metrics::Now;
+
+    #[derive(Deserialize)]
+    struct Tag {
+        #[serde(rename = "type")]
+        kind: String,
+    }
+    #[derive(Deserialize)]
+    struct Started {
+        stack_id: i64,
+        deployment_id: i64,
+        action: Action,
+    }
+    #[derive(Deserialize)]
+    struct Output {
+        deployment_id: i64,
+        line: String,
+    }
+    #[derive(Deserialize)]
+    struct Metrics {
+        now: Box<Now>,
+    }
+    #[derive(Deserialize)]
+    struct Check {
+        check: CheckStatus,
+    }
+
+    let tag: Tag = serde_json::from_str(text)?;
+    Ok(match tag.kind.as_str() {
+        "deployment_started" => {
+            let e: Started = serde_json::from_str(text)?;
+            ServerEvent::DeploymentStarted {
+                stack_id: e.stack_id,
+                deployment_id: e.deployment_id,
+                action: e.action,
+            }
+        }
+        "deployment_output" => {
+            let e: Output = serde_json::from_str(text)?;
+            ServerEvent::DeploymentOutput {
+                deployment_id: e.deployment_id,
+                line: e.line,
+            }
+        }
+        // Flattened on the wire: the event is the deployment plus its tag.
+        "deployment_finished" => ServerEvent::DeploymentFinished {
+            deployment: serde_json::from_str(text)?,
+        },
+        "container_changed" => ServerEvent::ContainerChanged {
+            change: serde_json::from_str(text)?,
+        },
+        "metrics" => ServerEvent::Metrics {
+            now: serde_json::from_str::<Metrics>(text)?.now,
+        },
+        "check_changed" => ServerEvent::CheckChanged {
+            check: serde_json::from_str::<Check>(text)?.check,
+        },
+        other => {
+            return Err(serde::de::Error::unknown_variant(other, ServerEvent::NAMES));
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use shared::checks::{CheckState, CheckStatus};
+    use shared::deployment::{Action, Deployment, DeploymentStatus, Trigger};
+    use shared::event::{ContainerChange, ServerEvent};
+
+    use super::decode;
+
+    #[test]
+    fn every_event_reads_as_its_derive_reads_it() {
+        let events = [
+            ServerEvent::DeploymentStarted {
+                stack_id: 3,
+                deployment_id: 9,
+                action: Action::Restart,
+            },
+            ServerEvent::DeploymentOutput {
+                deployment_id: 9,
+                line: "Container web-1 Started".to_owned(),
+            },
+            ServerEvent::DeploymentFinished {
+                deployment: Deployment {
+                    id: 9,
+                    stack_id: 3,
+                    action: Action::Deploy,
+                    trigger: Trigger::Manual,
+                    status: DeploymentStatus::Failed,
+                    exit_code: Some(1),
+                    commit_sha: Some("abc123".to_owned()),
+                    started_at: chrono::DateTime::from_timestamp(1_700_000_000, 0)
+                        .unwrap_or_default(),
+                    finished_at: chrono::DateTime::from_timestamp(1_700_000_060, 0),
+                },
+            },
+            ServerEvent::ContainerChanged {
+                change: ContainerChange {
+                    container_id: "abc".to_owned(),
+                    name: Some("web-1".to_owned()),
+                    project: Some("demo".to_owned()),
+                    action: "health_status: unhealthy".to_owned(),
+                },
+            },
+            ServerEvent::Metrics {
+                now: Box::default(),
+            },
+            ServerEvent::CheckChanged {
+                check: CheckStatus {
+                    check_id: 4,
+                    state: CheckState::Down,
+                    since: chrono::DateTime::from_timestamp(1_700_000_000, 0),
+                    last_at: None,
+                    latency_ms: Some(120),
+                    message: Some("timed out".to_owned()),
+                    tls_days_left: None,
+                },
+            },
+        ];
+        assert_eq!(events.len(), ServerEvent::NAMES.len(), "one of each kind");
+        for event in events {
+            let text = serde_json::to_string(&event).unwrap_or_default();
+            let derived = serde_json::from_str::<ServerEvent>(&text).ok();
+            assert_eq!(derived.as_ref(), Some(&event), "{text}");
+            assert_eq!(decode(&text).ok(), derived, "{text}");
+        }
+        assert!(decode(r#"{"type":"something_new"}"#).is_err());
+        assert!(decode("{}").is_err());
+    }
 }
