@@ -167,3 +167,61 @@ async fn up_wait_reports_failure_when_a_stack_comes_up_broken() {
          deploy, not a successful one. Output:\n{output}"
     );
 }
+
+#[tokio::test]
+async fn output_reaches_the_sink_while_the_command_is_still_running() {
+    require_daemon!();
+    // A deploy can take minutes. Someone watching it must see each line as
+    // compose prints it, not everything at once when it is over.
+    let f = Fixture::new("ghostdocktest-stream", &healthy_stack()).await;
+    let file = f.compose.project_dir(&f.stack).join(COMPOSE_FILE);
+    let argv: Vec<String> = [
+        "compose",
+        "--project-name",
+        &f.stack,
+        "--file",
+        &file.display().to_string(),
+        "run",
+        "--rm",
+        "-T",
+        "ok",
+        "sh",
+        "-c",
+        "echo first; sleep 5; echo second",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let compose = f.compose.clone();
+    let running = tokio::spawn(async move { compose.run(&argv, TIMEOUT, Some(tx)).await });
+
+    // Generous, for an image that has to be pulled first.
+    let first = tokio::time::timeout(Duration::from_secs(90), async {
+        while let Some(line) = rx.recv().await {
+            if line.trim() == "first" {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    let still_running = !running.is_finished();
+    let outcome = running.await.expect("join").expect("run");
+    f.teardown().await;
+
+    assert!(
+        matches!(first, Ok(true)),
+        "the first line never reached the sink"
+    );
+    assert!(
+        still_running,
+        "the first line arrived only after the command had finished"
+    );
+    assert!(outcome.success, "{}", outcome.output);
+    assert!(
+        outcome.output.contains("first") && outcome.output.contains("second"),
+        "the whole output is still collected: {}",
+        outcome.output
+    );
+}

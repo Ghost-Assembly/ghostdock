@@ -138,11 +138,7 @@ async fn look(
     pattern: Option<&str>,
 ) -> Result<Discovery, ApiError> {
     let git_ref = git_ref.trim();
-    if git_ref.is_empty() {
-        return Err(ApiError::BadRequest(
-            "Name the branch or tag, for example refs/heads/main.".to_owned(),
-        ));
-    }
+    domain::source::check_git_ref(git_ref).map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let source = pattern
         .map(str::trim)
         .filter(|p| !p.is_empty())

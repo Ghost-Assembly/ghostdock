@@ -23,6 +23,9 @@ use tokio::sync::mpsc;
 pub const COMPOSE_FILE: &str = "docker-compose.yml";
 pub const ENV_FILE: &str = ".env";
 
+/// How long output is still read after the process has exited.
+const DRAIN_GRACE: Duration = Duration::from_secs(10);
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("invalid stack name: {0}")]
@@ -163,6 +166,24 @@ impl Compose {
         Ok(Some(path))
     }
 
+    /// Removes a stack's `.env`, leaving everything else in its directory.
+    ///
+    /// For a stack that is no longer managed: the file holds its secrets in
+    /// plain text, while the rest of the directory may hold data its
+    /// containers still use.
+    pub async fn remove_env_file(&self, stack: &str) -> Result<()> {
+        slug::validate(stack)?;
+        let path = self.project_dir(stack).join(ENV_FILE);
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(Error::Io {
+                context: format!("removing {}", path.display()),
+                source,
+            }),
+        }
+    }
+
     /// Runs one invocation, streaming each output line to `sink` as it
     /// appears and returning the whole thing at the end.
     pub async fn run(
@@ -196,24 +217,47 @@ impl Compose {
 
         let mut output = String::new();
         let mut timed_out = false;
+        let mut status = None;
+        let mut exited = false;
+        let mut open = true;
+        let deadline = tokio::time::sleep(timeout);
+        tokio::pin!(deadline);
+        // Only set once the process has gone; see below.
+        let drained = tokio::time::sleep(Duration::MAX);
+        tokio::pin!(drained);
 
-        let status = tokio::select! {
-            status = child.wait() => status.ok(),
-            () = tokio::time::sleep(timeout) => {
-                timed_out = true;
-                let _ = child.start_kill();
-                child.wait().await.ok()
+        // Lines go to the sink as they arrive, while the process runs: a
+        // deploy takes minutes, and someone is watching it.
+        while open || !exited {
+            tokio::select! {
+                line = rx.recv(), if open => match line {
+                    Some(line) => {
+                        if let Some(sink) = &sink {
+                            let _ = sink.send(line.clone());
+                        }
+                        output.push_str(&line);
+                        output.push('\n');
+                    }
+                    // Both pipes closed.
+                    None => open = false,
+                },
+                done = child.wait(), if !exited => {
+                    status = done.ok();
+                    exited = true;
+                    drained.as_mut().reset(tokio::time::Instant::now() + DRAIN_GRACE);
+                }
+                () = &mut deadline, if !exited => {
+                    timed_out = true;
+                    let _ = child.start_kill();
+                    status = child.wait().await.ok();
+                    exited = true;
+                    drained.as_mut().reset(tokio::time::Instant::now() + DRAIN_GRACE);
+                }
+                // The pipes normally close with the process. Something it
+                // started may hold them open, and must not hold the stack's
+                // slot with them.
+                () = &mut drained, if exited => break,
             }
-        };
-
-        // Drain whatever the readers captured; the senders are dropped once
-        // the pipes close, so this terminates.
-        while let Some(line) = rx.recv().await {
-            if let Some(sink) = &sink {
-                let _ = sink.send(line.clone());
-            }
-            output.push_str(&line);
-            output.push('\n');
         }
 
         Ok(Outcome {
@@ -224,6 +268,32 @@ impl Compose {
             duration: started.elapsed(),
         })
     }
+}
+
+/// File names compose reads when it is given none, in its order.
+const DEFAULT_FILES: [&str; 4] = [
+    "compose.yaml",
+    "compose.yml",
+    "docker-compose.yaml",
+    "docker-compose.yml",
+];
+
+/// The file compose would pick up by itself for a project in `dir`.
+///
+/// Given no file, compose looks in the project directory and then in each
+/// directory above it. Acting on a project by name alone is only safe when
+/// this finds nothing: otherwise compose would read an unrelated file, and
+/// `stop` would stop only the services that file happens to name.
+pub async fn default_file_above(dir: &Path) -> Option<PathBuf> {
+    for ancestor in dir.ancestors() {
+        for name in DEFAULT_FILES {
+            let candidate = ancestor.join(name);
+            if tokio::fs::try_exists(&candidate).await.unwrap_or(true) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 fn pump<R>(stream: Option<R>, tx: mpsc::UnboundedSender<String>)

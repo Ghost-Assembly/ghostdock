@@ -11,5 +11,6 @@ pub mod glob;
 pub mod health;
 pub mod metrics;
 pub mod sizing;
+pub mod source;
 pub mod stack;
 pub mod update;

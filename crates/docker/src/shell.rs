@@ -44,22 +44,56 @@ impl Shell {
         (
             ShellReader {
                 output: self.output,
+                lines: crate::logs::Lines::default(),
+                ended: false,
             },
             ShellWriter { input: self.input },
         )
     }
 }
 
+/// How long part of a line waits for the rest before it is shown anyway.
+///
+/// Output without a newline is ordinary in a shell (`printf`, a prompt),
+/// and holding it until one arrives would show nothing at all.
+const PARTIAL_WAIT: std::time::Duration = std::time::Duration::from_millis(200);
+
 /// The output half.
 pub struct ShellReader {
     output: Output,
+    lines: crate::logs::Lines,
+    ended: bool,
 }
 
 impl ShellReader {
     /// The next batch of output, or `None` once the shell has ended.
     pub async fn next_lines(&mut self) -> Option<Vec<LogLine>> {
-        let chunk = self.output.next().await?;
-        Some(crate::logs::to_lines(&chunk.ok()?))
+        if self.ended {
+            return None;
+        }
+        loop {
+            let next = if self.lines.has_partial() {
+                match tokio::time::timeout(PARTIAL_WAIT, self.output.next()).await {
+                    Ok(next) => next,
+                    Err(_) => return Some(self.lines.finish()),
+                }
+            } else {
+                self.output.next().await
+            };
+            match next {
+                Some(Ok(chunk)) => {
+                    let lines = self.lines.push(&chunk);
+                    if !lines.is_empty() {
+                        return Some(lines);
+                    }
+                }
+                Some(Err(_)) | None => {
+                    self.ended = true;
+                    let rest = self.lines.finish();
+                    return (!rest.is_empty()).then_some(rest);
+                }
+            }
+        }
     }
 }
 

@@ -158,6 +158,74 @@ async fn bootstrap_is_refused_once_an_admin_exists() {
 }
 
 #[tokio::test]
+async fn two_people_setting_up_at_once_do_not_both_become_administrator() {
+    let a = Client::new().await;
+    let mut b = a.sibling();
+    let mut a = a;
+    let (first, second) = tokio::join!(
+        a.send(
+            "POST",
+            "/api/v1/auth/bootstrap",
+            Some(Client::credentials("first", PASSWORD)),
+        ),
+        b.send(
+            "POST",
+            "/api/v1/auth/bootstrap",
+            Some(Client::credentials("second", PASSWORD)),
+        ),
+    );
+    let mut statuses = [first.0, second.0];
+    statuses.sort();
+    assert_eq!(statuses, [StatusCode::OK, StatusCode::CONFLICT]);
+
+    let signed_in = if first.0 == StatusCode::OK {
+        &mut a
+    } else {
+        &mut b
+    };
+    let (_, users) = signed_in.send("GET", "/api/v1/users", None).await;
+    assert_eq!(users.as_array().map(Vec::len), Some(1), "{users}");
+}
+
+#[tokio::test]
+async fn repeated_failed_sign_ins_are_refused_for_a_while() {
+    let mut c = Client::signed_in().await;
+    c.send("POST", "/api/v1/auth/logout", None).await;
+    for _ in 0..10 {
+        let (status, _) = c
+            .send(
+                "POST",
+                "/api/v1/auth/login",
+                Some(Client::credentials("admin", "a wrong guess, again")),
+            )
+            .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    // Even the right password, now: the point is not to be told which
+    // guess was right.
+    let (status, body) = c
+        .send(
+            "POST",
+            "/api/v1/auth/login",
+            Some(Client::credentials("Admin", PASSWORD)),
+        )
+        .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(body["code"], json!("too_many_attempts"));
+
+    // Someone else's account is not locked by it.
+    let (status, _) = c
+        .send(
+            "POST",
+            "/api/v1/auth/login",
+            Some(Client::credentials("someone", "a wrong guess, again")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn bootstrap_enforces_the_password_policy() {
     let mut c = Client::new().await;
     let (status, body) = c
@@ -690,6 +758,89 @@ async fn a_git_stack_needs_a_ref_and_a_real_repository() {
         )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_repository_url_git_would_misread_is_refused() {
+    // Each of these makes git run a command or reach a transport GhostDock
+    // never offered. None may be stored.
+    let mut c = Client::signed_in().await;
+    for url in [
+        "--upload-pack=touch /tmp/ghostdock-pwned",
+        "ext::sh -c touch% /tmp/ghostdock-pwned",
+        "ext::sh",
+        "fd::3",
+        "ftp://example.invalid/r.git",
+        "/srv/git/local-path.git",
+        "https://example.invalid/r .git",
+    ] {
+        let (status, body) = c
+            .send(
+                "POST",
+                "/api/v1/repos",
+                Some(json!({ "url": url, "credential_id": null })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{url} was accepted");
+        assert_eq!(body["code"], json!("bad_request"));
+    }
+    let (_, repos) = c.send("GET", "/api/v1/repos", None).await;
+    assert_eq!(repos, json!([]), "nothing was stored");
+}
+
+#[tokio::test]
+async fn a_password_in_a_repository_url_is_refused_with_where_it_belongs() {
+    let mut c = Client::signed_in().await;
+    let (status, body) = c
+        .send(
+            "POST",
+            "/api/v1/repos",
+            Some(
+                json!({ "url": "https://me:hunter2@example.invalid/r.git", "credential_id": null }),
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let message = body["message"].as_str().unwrap();
+    assert!(message.contains("Credentials"), "{message}");
+    assert!(!message.contains("hunter2"), "the password was echoed back");
+}
+
+#[tokio::test]
+async fn a_ref_git_would_read_as_an_option_is_refused() {
+    let (_dir, url) = discovery_repo();
+    let mut c = Client::signed_in().await;
+    let repo = c.repo(&url, None).await;
+    let bad = "--upload-pack=touch /tmp/ghostdock-pwned";
+
+    let (status, _) = c
+        .send(
+            "POST",
+            "/api/v1/hosts/1/stacks/git",
+            Some(json!({
+                "name": "A", "repo_id": repo, "git_ref": bad, "compose_path": "a.yml"
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "registering");
+
+    for route in ["discover", "import"] {
+        let (status, body) = c
+            .send(
+                "POST",
+                &format!("/api/v1/repos/{repo}/{route}"),
+                Some(json!({ "git_ref": bad, "pattern": null, "paths": ["compose.yaml"] })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{route}: {body}");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap()
+                .contains("cannot start with -"),
+            "{route}: {body}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1990,19 +2141,32 @@ async fn an_import_finishes_even_if_the_caller_goes_away() {
             .to_string(),
         ))
         .unwrap();
-    // Dropped long before git could have fetched anything.
-    let abandoned = tokio::time::timeout(
-        std::time::Duration::from_millis(1),
-        c.router.clone().oneshot(req),
-    )
-    .await;
-    assert!(
-        abandoned.is_err(),
-        "the request should still have been running"
-    );
+    // Dropped once the import is under way: its checkout exists, so the
+    // request got past authentication and into the work. Dropping on a
+    // fixed timer instead sometimes dropped it before it had started,
+    // which proves nothing and failed when the machine was busy.
+    let checkout = c
+        ._stacks_root
+        .path()
+        .join(".discovery")
+        .join(repo.to_string());
+    let mut request = Box::pin(c.router.clone().oneshot(req));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !checkout.exists() {
+        let polled = tokio::time::timeout(std::time::Duration::from_millis(1), &mut request).await;
+        assert!(
+            polled.is_err(),
+            "the import finished before it could be abandoned"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the import never started"
+        );
+    }
+    drop(request);
 
     let mut registered = Vec::new();
-    for _ in 0..50 {
+    for _ in 0..100 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         // The updates list names every registered stack, and needs no daemon.
         let (_, updates) = c.send("GET", "/api/v1/hosts/1/updates", None).await;
@@ -2048,4 +2212,375 @@ async fn running_a_command_needs_shell_open_and_a_daemon() {
         )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// ---- the daemon's answers -------------------------------------------------
+
+#[tokio::test]
+async fn a_container_the_daemon_does_not_have_is_not_found() {
+    // Not "the daemon is unreachable": it answered, and the answer is no.
+    let Ok(docker) = docker::Client::connect() else {
+        eprintln!("SKIPPED: no Docker daemon reachable");
+        return;
+    };
+    if docker.version().await.is_err() {
+        eprintln!("SKIPPED: no Docker daemon reachable");
+        return;
+    }
+    let store = Store::open_in_memory().await.expect("store");
+    let root = tempfile::tempdir().expect("temp dir");
+    let mut c = Client {
+        router: app::build(AppState::new(store, Some(docker), root.path()), false, None),
+        cookie: None,
+        bearer: None,
+        _stacks_root: root,
+    };
+    c.send(
+        "POST",
+        "/api/v1/auth/bootstrap",
+        Some(Client::credentials("admin", PASSWORD)),
+    )
+    .await;
+
+    let missing = "ghostdocktest-no-such-container";
+    let (status, body) = c
+        .send(
+            "GET",
+            &format!("/api/v1/hosts/1/containers/{missing}/logs"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, body) = c
+        .send(
+            "POST",
+            &format!("/api/v1/hosts/1/containers/{missing}/exec/run"),
+            Some(json!({ "command": "true", "timeout_seconds": 5 })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+}
+
+// ---- operations on what was deployed --------------------------------------
+
+fn daemon_available() -> bool {
+    std::process::Command::new("docker")
+        .args(["info", "--format", "{{.ServerVersion}}"])
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+fn git_in(dir: &std::path::Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+impl Client {
+    /// Runs an operation and waits for its outcome.
+    async fn operate(&mut self, stack: i64, verb: &str) -> Value {
+        let (status, started) = self
+            .send("POST", &format!("/api/v1/stacks/{stack}/{verb}"), None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{verb}: {started}");
+        let id = started["id"].as_i64().unwrap();
+        for _ in 0..600 {
+            let (_, detail) = self
+                .send("GET", &format!("/api/v1/deployments/{id}"), None)
+                .await;
+            if detail["status"] != json!("running") {
+                return detail;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+        panic!("{verb} did not finish");
+    }
+}
+
+#[tokio::test]
+async fn restarting_does_not_fetch_or_mark_the_stack_up_to_date() {
+    // Only a deploy changes what a stack runs. Restarting after a push must
+    // leave the new commit waiting, not claim it was applied.
+    if !daemon_available() {
+        eprintln!("SKIPPED: no Docker daemon reachable");
+        return;
+    }
+    let origin = tempfile::tempdir().unwrap();
+    std::fs::write(
+        origin.path().join("compose.yaml"),
+        "services:\n  app:\n    image: alpine:3.22\n    command: [\"sleep\", \"3600\"]\n",
+    )
+    .unwrap();
+    git_in(
+        origin.path(),
+        &["init", "--quiet", "--initial-branch", "main", "."],
+    );
+    git_in(origin.path(), &["add", "."]);
+    git_in(origin.path(), &["commit", "--quiet", "-m", "first"]);
+    let url = format!("file://{}", origin.path().display());
+
+    let mut c = Client::signed_in().await;
+    let repo = c.repo(&url, None).await;
+    let (status, stack) = c
+        .send(
+            "POST",
+            "/api/v1/hosts/1/stacks/git",
+            Some(json!({
+                "name": "ghostdocktest-restart-behind", "repo_id": repo,
+                "git_ref": "refs/heads/main", "compose_path": "compose.yaml"
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{stack}");
+    let id = stack["id"].as_i64().unwrap();
+
+    let deployed = c.operate(id, "deploy").await;
+    let deployed_ok = deployed["status"] == json!("succeeded");
+    let deployed_commit = deployed["commit_sha"].clone();
+
+    std::fs::write(origin.path().join("README.md"), "moved on\n").unwrap();
+    git_in(origin.path(), &["add", "."]);
+    git_in(origin.path(), &["commit", "--quiet", "-m", "second"]);
+
+    let restarted = c.operate(id, "restart").await;
+    let (_, after) = c
+        .send("POST", &format!("/api/v1/stacks/{id}/check"), None)
+        .await;
+    let (_, now) = c.send("GET", &format!("/api/v1/stacks/{id}"), None).await;
+    let down = c.operate(id, "down").await;
+
+    assert!(deployed_ok, "{}", deployed["log"]);
+    assert_eq!(
+        restarted["status"],
+        json!("succeeded"),
+        "{}",
+        restarted["log"]
+    );
+    assert_eq!(
+        restarted["commit_sha"],
+        Value::Null,
+        "restart fetched nothing"
+    );
+    assert_eq!(
+        now["git"]["last_commit"], deployed_commit,
+        "the deployed commit is still the first one"
+    );
+    assert_eq!(after["deployed_commit"], deployed_commit);
+    assert_ne!(
+        after["remote_commit"], after["deployed_commit"],
+        "the new commit is still waiting: {after}"
+    );
+    assert_eq!(down["status"], json!("succeeded"), "{}", down["log"]);
+}
+
+#[tokio::test]
+async fn taking_down_a_stack_never_deployed_from_here_uses_its_name() {
+    // A stack imported while already running has no checkout here yet.
+    // Taking it down must not fetch one first.
+    if !daemon_available() {
+        eprintln!("SKIPPED: no Docker daemon reachable");
+        return;
+    }
+    let mut c = Client::signed_in().await;
+    // Unreachable on purpose: any fetch would fail the operation.
+    let repo = c.repo("file:///nonexistent/ghostdocktest.git", None).await;
+    let (_, stack) = c
+        .send(
+            "POST",
+            "/api/v1/hosts/1/stacks/git",
+            Some(json!({
+                "name": "ghostdocktest-never-deployed", "repo_id": repo,
+                "git_ref": "refs/heads/main", "compose_path": "compose.yaml"
+            })),
+        )
+        .await;
+    let id = stack["id"].as_i64().unwrap();
+
+    for verb in ["stop", "restart", "down"] {
+        let done = c.operate(id, verb).await;
+        assert_eq!(
+            done["status"],
+            json!("succeeded"),
+            "{verb}: {}",
+            done["log"]
+        );
+    }
+}
+
+/// A git server that accepts connections and never answers, so anything
+/// fetching from it stays busy until the listener is dropped.
+async fn silent_remote() -> (tokio::task::JoinHandle<()>, String) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("git://{}/stacks.git", listener.local_addr().unwrap());
+    let held = tokio::spawn(async move {
+        let mut open = Vec::new();
+        while let Ok((socket, _)) = listener.accept().await {
+            open.push(socket);
+        }
+    });
+    (held, url)
+}
+
+#[tokio::test]
+async fn a_stack_cannot_be_forgotten_while_something_is_running_for_it() {
+    let (remote, url) = silent_remote().await;
+    let mut c = Client::signed_in().await;
+    let repo = c.repo(&url, None).await;
+    let (_, stack) = c
+        .send(
+            "POST",
+            "/api/v1/hosts/1/stacks/git",
+            Some(json!({
+                "name": "Busy", "repo_id": repo,
+                "git_ref": "refs/heads/main", "compose_path": "compose.yaml"
+            })),
+        )
+        .await;
+    let id = stack["id"].as_i64().unwrap();
+
+    let (status, _) = c
+        .send("POST", &format!("/api/v1/stacks/{id}/deploy"), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = c
+        .send("DELETE", &format!("/api/v1/stacks/{id}"), None)
+        .await;
+    remote.abort();
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (status, _) = c.send("GET", &format!("/api/v1/stacks/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "still registered");
+}
+
+#[tokio::test]
+async fn forgetting_a_stack_removes_its_secrets_file_and_nothing_else() {
+    let mut c = Client::signed_in().await;
+    let (_, stack) = c
+        .send(
+            "POST",
+            "/api/v1/hosts/1/stacks",
+            Some(Client::stack("App", COMPOSE)),
+        )
+        .await;
+    let id = stack["id"].as_i64().unwrap();
+    // As a deploy leaves it.
+    let dir = c._stacks_root.path().join("app");
+    std::fs::create_dir_all(dir.join("data")).unwrap();
+    std::fs::write(dir.join(".env"), "API_KEY=sk_live_secret\n").unwrap();
+    std::fs::write(dir.join("docker-compose.yml"), COMPOSE).unwrap();
+    std::fs::write(dir.join("data/app.db"), "keep me").unwrap();
+
+    let (status, _) = c
+        .send("DELETE", &format!("/api/v1/stacks/{id}"), None)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    assert!(!dir.join(".env").exists(), "the secrets outlived the stack");
+    assert!(dir.join("docker-compose.yml").exists());
+    assert!(
+        dir.join("data/app.db").exists(),
+        "data must never be removed"
+    );
+}
+
+#[tokio::test]
+async fn removing_a_repository_removes_its_discovery_checkout() {
+    let (_dir, url) = discovery_repo();
+    let mut c = Client::signed_in().await;
+    let repo = c.repo(&url, None).await;
+    c.send(
+        "POST",
+        &format!("/api/v1/repos/{repo}/discover"),
+        Some(json!({ "git_ref": "refs/heads/main", "pattern": null })),
+    )
+    .await;
+    let checkout = c
+        ._stacks_root
+        .path()
+        .join(".discovery")
+        .join(repo.to_string());
+    assert!(checkout.join(".git").exists(), "discovery checked it out");
+
+    let (status, _) = c
+        .send("DELETE", &format!("/api/v1/repos/{repo}"), None)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(!checkout.exists());
+}
+
+#[tokio::test]
+async fn every_change_to_a_stack_or_its_sources_is_recorded_without_values() {
+    let mut c = Client::signed_in().await;
+    let (_, stack) = c
+        .send(
+            "POST",
+            "/api/v1/hosts/1/stacks",
+            Some(Client::stack("App", COMPOSE)),
+        )
+        .await;
+    let id = stack["id"].as_i64().unwrap();
+    let repo = c.repo("https://example.invalid/r.git", None).await;
+
+    c.send(
+        "PUT",
+        &format!("/api/v1/stacks/{id}"),
+        Some(Client::stack("App", "services: {}  # sk_in_compose\n")),
+    )
+    .await;
+    c.send(
+        "PUT",
+        &format!("/api/v1/stacks/{id}/env"),
+        Some(json!({ "vars": [{ "key": "API_KEY", "value": "sk_live_secret" }] })),
+    )
+    .await;
+    c.send("DELETE", &format!("/api/v1/stacks/{id}/env/API_KEY"), None)
+        .await;
+    c.send(
+        "PUT",
+        &format!("/api/v1/stacks/{id}/auto-apply"),
+        Some(json!({ "enabled": true })),
+    )
+    .await;
+    c.send("DELETE", &format!("/api/v1/repos/{repo}"), None)
+        .await;
+
+    let (_, body) = c.send("GET", "/api/v1/audit", None).await;
+    let entries: Vec<(String, String)> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["action"].as_str().unwrap().to_owned(),
+                e["target"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    for (action, target) in [
+        ("edit compose file", "app"),
+        ("replace variables", "app"),
+        ("remove variable", "API_KEY"),
+        ("turn on auto-apply", "app"),
+        ("remove repository", "https://example.invalid/r.git"),
+    ] {
+        assert!(
+            entries.contains(&(action.to_owned(), target.to_owned())),
+            "no {action} of {target} in {entries:?}"
+        );
+    }
+    let rendered = body.to_string();
+    assert!(rendered.contains("API_KEY"), "names are recorded");
+    assert!(!rendered.contains("sk_live_secret"), "a value was recorded");
+    assert!(!rendered.contains("sk_in_compose"), "the file was recorded");
 }
