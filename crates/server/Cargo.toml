@@ -29,7 +29,7 @@ chrono = { workspace = true }
 tower = { workspace = true }
 # Already in the tree through axum's WebSocket support; a real client for the
 # event socket test.
-tokio-tungstenite = "0.29.0"
+tokio-tungstenite = "0.30.0"
 tower-http = { workspace = true }
 tower-sessions = { workspace = true }
 async-trait = { workspace = true }
@@ -50,4 +50,4 @@ http-body-util = { workspace = true }
 tower = { workspace = true }
 # Already in the tree through axum's WebSocket support; a real client for the
 # event socket test.
-tokio-tungstenite = "0.29.0"
+tokio-tungstenite = "0.30.0"
