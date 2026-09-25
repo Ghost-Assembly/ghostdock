@@ -273,22 +273,19 @@ async fn summarise(state: &AppState, checks: Vec<Check>) -> Result<Vec<CheckSumm
     Ok(checks
         .into_iter()
         .map(|check| {
-            let status = state
-                .checks
-                .status(check.id)
-                .unwrap_or(CheckStatus {
-                    check_id: check.id,
-                    state: if check.enabled {
-                        CheckState::Pending
-                    } else {
-                        CheckState::Paused
-                    },
-                    since: None,
-                    last_at: None,
-                    latency_ms: None,
-                    message: None,
-                    tls_days_left: None,
-                });
+            let status = state.checks.status(check.id).unwrap_or(CheckStatus {
+                check_id: check.id,
+                state: if check.enabled {
+                    CheckState::Pending
+                } else {
+                    CheckState::Paused
+                },
+                since: None,
+                last_at: None,
+                latency_ms: None,
+                message: None,
+                tls_days_left: None,
+            });
             let uptime_24h = of(day.get(&check.id));
             CheckSummary {
                 status,
