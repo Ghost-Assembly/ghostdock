@@ -287,22 +287,37 @@ async fn a_months_sizing_inputs_are_summarised_quickly() {
         let rows: Vec<_> = (0..1440).map(|i| (id, varied(day * 1440 + i))).collect();
         m.write_minute(&rows).await.unwrap();
     }
-    // The best of three: one slow run on a shared CI machine is the
-    // machine, while a slow query is slow every time.
-    let mut took = std::time::Duration::MAX;
+    // Timed against the same machine reading the same month's rows into
+    // Rust, which is what summarising in SQL replaced: a fixed budget held
+    // on a fast desk machine and failed on a slower CI runner. Each is the
+    // best of three, so one slow scheduler slice decides nothing.
+    let best = |times: &[std::time::Duration]| times.iter().copied().min().unwrap();
+    let mut summary_times = Vec::new();
+    let mut read_times = Vec::new();
     let mut got = None;
     for _ in 0..3 {
         let started = std::time::Instant::now();
         got = Some(m.sizing_summary(id, 0, 30 * 86_400).await.unwrap());
-        took = took.min(started.elapsed());
+        summary_times.push(started.elapsed());
+
+        let started = std::time::Instant::now();
+        let rows = m
+            .read(id, Resolution::Minute, 0, 30 * 86_400)
+            .await
+            .unwrap();
+        read_times.push(started.elapsed());
+        assert!(rows.len() > 40_000);
     }
     let got = got.unwrap();
     assert!(got.running > 40_000);
-    // Two sorts of a month of figures, about 40 ms; reading the rows into
-    // Rust instead takes several times that. The server also caches advice.
+    let (summary, read) = (best(&summary_times), best(&read_times));
+    eprintln!("summary {summary:?}, reading the rows {read:?}");
+    // About seven times faster when written. The server also caches
+    // advice, so this is about not regressing to shipping a month of rows
+    // out of SQLite.
     assert!(
-        took < std::time::Duration::from_millis(100),
-        "took {took:?}"
+        summary * 3 < read,
+        "summarising took {summary:?}, reading the rows took {read:?}"
     );
 }
 
