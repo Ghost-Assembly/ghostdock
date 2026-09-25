@@ -37,6 +37,7 @@ mod host;
 mod load;
 mod logs;
 mod new_stack;
+mod reference;
 mod resources;
 mod screen;
 mod settings;

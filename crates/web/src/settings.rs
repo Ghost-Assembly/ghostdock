@@ -69,6 +69,12 @@ pub fn Settings(user: User, session: RwSignal<Session>) -> impl IntoView {
                 name="API tokens"
                 detail="Let another program act for you, within limits"
             />
+            <Row
+                state="running"
+                href="/settings/reference"
+                name="API reference"
+                detail="Every endpoint and MCP tool, and the permission each needs"
+            />
         </ul>
 
         <h2 class="group-heading">"Host"</h2>

@@ -80,6 +80,23 @@ const overflow = await page.evaluate(() =>
   document.documentElement.scrollWidth - document.documentElement.clientWidth);
 if (overflow > 0) problems.push(`page scrolls horizontally by ${overflow}px`);
 
+// 4. The reference says what a token needs for each endpoint.
+await page.click('.nav-item:has-text("Settings")');
+await page.click('a:has-text("API reference")');
+await page.waitForSelector('h1.wordmark:has-text("API reference")');
+const deployRow = page.locator('.row', { hasText: 'POST /api/v1/stacks/{id}/deploy' });
+await deployRow.waitFor({ timeout: 15000 });
+const needs = (await deployRow.locator('.row-count').textContent()).trim();
+console.log('reference     :', `deploy needs ${needs}`);
+if (needs !== 'stacks.deploy') problems.push(`the reference says deploy needs ${needs}`);
+if (!(await page.locator('.row-name', { hasText: 'deploy_stack' }).count())) {
+  problems.push('the reference does not list the deploy_stack tool');
+}
+await page.screenshot({ path: `${SHOTS}/reference.png`, fullPage: true });
+const referenceOverflow = await page.evaluate(() =>
+  document.documentElement.scrollWidth - document.documentElement.clientWidth);
+if (referenceOverflow > 0) problems.push(`the reference scrolls horizontally by ${referenceOverflow}px`);
+
 await browser.close();
 console.log(problems.length ? `\nPROBLEMS:\n- ${problems.join('\n- ')}` : '\nNo console errors, no overflow.');
 process.exit(problems.length ? 1 : 0);
