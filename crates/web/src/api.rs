@@ -3,6 +3,9 @@
 //! The server speaks plain JSON over REST, so this is a thin, replaceable
 //! layer — which is the point: no domain logic lives here, only transport.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use gloo_net::http::{Request, RequestBuilder, Response};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -66,13 +69,6 @@ impl Error {
             status: None,
         }
     }
-
-    /// True when the caller simply is not signed in, which is a normal state
-    /// to be in rather than a failure worth reporting.
-    #[must_use]
-    pub fn is_unauthenticated(&self) -> bool {
-        self.status == Some(401)
-    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -86,16 +82,39 @@ async fn read<T: DeserializeOwned>(response: Response) -> Result<T> {
         });
     }
 
-    // Surface the server's own message. It was written to be shown.
+    Err(refusal(response).await)
+}
+
+thread_local! {
+    static ON_UNAUTHENTICATED: RefCell<Option<Rc<dyn Fn()>>> = const { RefCell::new(None) };
+}
+
+/// Runs `f` whenever the server answers 401: the session has ended, by
+/// expiry, a password change or signing out elsewhere. Handled here, once,
+/// so every screen falls back to sign-in rather than showing an
+/// authentication error where its content should be.
+pub fn on_unauthenticated(f: impl Fn() + 'static) {
+    ON_UNAUTHENTICATED.with(|slot| *slot.borrow_mut() = Some(Rc::new(f)));
+}
+
+/// The error for a response that was not a success. Surfaces the server's
+/// own message, which was written to be shown.
+async fn refusal(response: Response) -> Error {
+    let status = response.status();
+    if status == 401 {
+        // Taken out first: the hook may make requests of its own.
+        if let Some(hook) = ON_UNAUTHENTICATED.with(|slot| slot.borrow().clone()) {
+            hook();
+        }
+    }
     let message = response.json::<shared::ApiError>().await.map_or_else(
         |_| format!("Request failed with status {status}"),
         |e| e.message,
     );
-
-    Err(Error {
+    Error {
         message,
         status: Some(status),
-    })
+    }
 }
 
 async fn get<T: DeserializeOwned>(path: &str) -> Result<T> {
@@ -180,7 +199,8 @@ pub async fn logout() -> Result<()> {
         .map_err(|e| Error::network(&e.to_string()))?;
 
     let status = response.status();
-    if (200..300).contains(&status) {
+    // A 401 means there was no session left to end: signed out either way.
+    if (200..300).contains(&status) || status == 401 {
         Ok(())
     } else {
         Err(Error {
@@ -247,14 +267,7 @@ async fn delete(path: &str) -> Result<()> {
 
     // The server explains conflicts ("stacks are still defined in this
     // repository"), and that explanation is the whole value of the response.
-    let message = response.json::<shared::ApiError>().await.map_or_else(
-        |_| format!("Request failed with status {status}"),
-        |e| e.message,
-    );
-    Err(Error {
-        message,
-        status: Some(status),
-    })
+    Err(refusal(response).await)
 }
 
 /// Starts an operation. Returns as soon as it is recorded, not when it ends;
@@ -324,13 +337,19 @@ pub async fn stack_env_keys(stack_id: i64) -> Result<StackEnvKeys> {
     get(&format!("/stacks/{stack_id}/env")).await
 }
 
+/// One variable's address. The name is encoded, so whatever was typed stays
+/// one path segment; screens also refuse names the server would.
+fn env_url(stack_id: i64, key: &str) -> String {
+    format!("{BASE}/stacks/{stack_id}/env/{}", component(key))
+}
+
 /// Sets one variable, leaving the others untouched.
 pub async fn set_stack_env_one(
     stack_id: i64,
     key: &str,
     body: &shared::source::EnvValue,
 ) -> Result<StackEnvKeys> {
-    let response = request("PUT", &format!("{BASE}/stacks/{stack_id}/env/{key}"))
+    let response = request("PUT", &env_url(stack_id, key))
         .json(body)
         .map_err(|e| Error::network(&e.to_string()))?
         .send()
@@ -340,7 +359,7 @@ pub async fn set_stack_env_one(
 }
 
 pub async fn delete_stack_env_one(stack_id: i64, key: &str) -> Result<StackEnvKeys> {
-    let response = request("DELETE", &format!("{BASE}/stacks/{stack_id}/env/{key}"))
+    let response = request("DELETE", &env_url(stack_id, key))
         .send()
         .await
         .map_err(|e| Error::network(&e.to_string()))?;
@@ -382,7 +401,11 @@ pub async fn set_auto_apply(id: i64, enabled: bool) -> Result<AutoApply> {
 // ---- operations -------------------------------------------------------
 
 pub async fn container_logs(host_id: i64, container: &str) -> Result<Logs> {
-    get(&format!("/hosts/{host_id}/containers/{container}/logs")).await
+    get(&format!(
+        "/hosts/{host_id}/containers/{}/logs",
+        component(container)
+    ))
+    .await
 }
 
 pub async fn cleanup_preview(host_id: i64) -> Result<CleanupPreview> {
@@ -408,7 +431,7 @@ pub async fn metrics_now() -> Result<Now> {
 pub async fn metrics_series(target: &Target, range: Range) -> Result<Series> {
     get(&format!(
         "/hosts/1/metrics/series?subject={}&range={}",
-        query_value(&target.to_param()),
+        component(&target.to_param()),
         range.as_str()
     ))
     .await
@@ -417,7 +440,7 @@ pub async fn metrics_series(target: &Target, range: Range) -> Result<Series> {
 pub async fn container_figures(project: &str, range: Range) -> Result<Vec<ContainerFigures>> {
     get(&format!(
         "/hosts/1/metrics/containers?project={}&range={}",
-        query_value(project),
+        component(project),
         range.as_str()
     ))
     .await
@@ -427,9 +450,12 @@ pub async fn sizing() -> Result<Vec<Recommendation>> {
     get("/hosts/1/sizing").await
 }
 
-/// Percent-encodes everything but unreserved characters: subjects carry
-/// names and paths, which may hold anything a directory name can.
-fn query_value(text: &str) -> String {
+/// Percent-encodes everything but unreserved characters, for a query value
+/// or a path segment. Subjects carry names and paths, which may hold
+/// anything a directory name can; a path segment holding `/`, `?` or `#`
+/// would otherwise address another endpoint altogether.
+#[must_use]
+pub fn component(text: &str) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(text.len());
     for byte in text.bytes() {
@@ -444,18 +470,27 @@ fn query_value(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::query_value;
+    use super::{component, env_url};
 
     #[test]
-    fn a_query_value_is_percent_encoded() {
+    fn a_path_segment_stays_one_segment() {
+        assert_eq!(env_url(3, "API_KEY"), "/api/v1/stacks/3/env/API_KEY");
         assert_eq!(
-            query_value("container:blog-web_1.x~"),
+            env_url(3, "A/../B?x#y"),
+            "/api/v1/stacks/3/env/A%2F..%2FB%3Fx%23y"
+        );
+    }
+
+    #[test]
+    fn a_component_is_percent_encoded() {
+        assert_eq!(
+            component("container:blog-web_1.x~"),
             "container%3Ablog-web_1.x~"
         );
         assert_eq!(
-            query_value("disk:/host/disks/my media&co"),
+            component("disk:/host/disks/my media&co"),
             "disk%3A%2Fhost%2Fdisks%2Fmy%20media%26co"
         );
-        assert_eq!(query_value("é"), "%C3%A9");
+        assert_eq!(component("é"), "%C3%A9");
     }
 }

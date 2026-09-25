@@ -76,6 +76,28 @@ if ((await page.content()).includes(SECRET)) {
 }
 await page.screenshot({ path: `${SHOTS}/git-env.png` });
 
+// A name the server would refuse is explained before anything is sent.
+await page.fill('input[placeholder="API_KEY"]', 'BAD-NAME');
+await page.fill('input[type=password]', 'anything');
+await page.click('button:has-text("Save variable")');
+const refused = await page.waitForSelector('.notice:has-text("letters, digits and underscores")', { timeout: 5000 })
+  .then(() => true, () => false);
+console.log('bad name      :', refused ? 'explained, not sent' : 'NOT EXPLAINED');
+if (!refused) problems.push('a variable name the server refuses was not explained');
+
+// Removing a variable takes two taps.
+await page.fill('input[placeholder="API_KEY"]', 'TEMPORARY');
+await page.fill('input[type=password]', 'anything');
+await page.click('button:has-text("Save variable")');
+await page.waitForSelector('.row-name:text("TEMPORARY")', { timeout: 15000 });
+const temporary = page.locator('.row', { has: page.locator('.row-name:text("TEMPORARY")') });
+await temporary.locator('.row-action:has-text("Remove")').click();
+await page.waitForTimeout(300);
+if (!(await page.$('.row-name:text("TEMPORARY")'))) problems.push('one tap removed a variable');
+await temporary.locator('.row-action:has-text("Remove it")').click();
+await page.waitForSelector('.row-name:text("TEMPORARY")', { state: 'detached', timeout: 10000 });
+console.log('removed       : TEMPORARY, after confirming');
+
 // 4. Deploy from the repository.
 await page.click('a.topbar-link:has-text("Back")');
 await page.waitForSelector('.actions');

@@ -32,7 +32,9 @@ for (let n = 2; n <= TABS; n++) {
   if (n === TABS) console.log(`tab ${n}       :`, loaded ? `loaded in ${Date.now() - t0}ms` : 'FROZEN');
 }
 
-// The server closes the first tab's socket when its password changes.
+// The server closes the first tab's socket when its password changes. The
+// tab says live updates have paused, and stops saying so once they resume.
+const pausedSaid = first.waitForSelector('.live-paused', { timeout: 10000 }).then(() => true, () => false);
 const changed = await first.evaluate(async () => (await fetch('/api/v1/auth/password', {
   method: 'PUT',
   headers: { 'content-type': 'application/json' },
@@ -41,7 +43,12 @@ const changed = await first.evaluate(async () => (await fetch('/api/v1/auth/pass
   signal: AbortSignal.timeout(10000),
 })).status).catch(e => `no answer (${e.message})`);
 if (changed !== 204) problems.push(`password change returned ${changed}`);
-await first.waitForTimeout(2500);
+if (!(await pausedSaid)) problems.push('the tab did not say its live updates had paused');
+const resumed = await first.waitForSelector('.live-paused', { state: 'detached', timeout: 10000 })
+  .then(() => true, () => false);
+console.log('paused note   :', resumed ? 'shown while disconnected, gone once back' : 'STILL SHOWN');
+if (!resumed) problems.push('the paused note stayed after live updates resumed');
+await first.waitForTimeout(1000);
 
 // Reconnected with its new session, it still hears about the host.
 execFileSync('docker', ['stop', '-t', '0', 'livebox-box-1'], { stdio: 'ignore' });

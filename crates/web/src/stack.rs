@@ -12,6 +12,7 @@ use crate::api;
 use crate::charts::Measure;
 use crate::confirm::Confirm;
 use crate::events::use_events;
+use crate::load::Load;
 use crate::resources::{Charts, ContainerFigureRows, RangePicker};
 use crate::screen::Screen;
 
@@ -40,45 +41,103 @@ pub fn StackDetail() -> impl IntoView {
     let resources_project =
         Memo::new(move |_| stack.with(|s| s.as_ref().map(|s| s.slug.clone()).unwrap_or_default()));
     let resources_target = Memo::new(move |_| Target::Stack(resources_project.get()));
-    let history = RwSignal::new(Vec::<Deployment>::new());
+    let history = RwSignal::new(Load::<Vec<Deployment>>::Loading);
+    let containers = RwSignal::new(Load::<Vec<Container>>::Loading);
+    // Reading the stack failed; cleared by the next read that works.
+    let load_error = RwSignal::new(None::<String>);
+    // Something asked of the server failed.
     let error = RwSignal::new(None::<String>);
-    let busy = RwSignal::new(false);
+    // The operation running now, found by a read or announced by an event.
+    let active = RwSignal::new(None::<i64>);
+    // Asked for here and not yet answered.
+    let starting = RwSignal::new(false);
+    // Busy is what the server says is running, not a flag someone has to
+    // remember to lower: a finish missed while offline cannot leave the
+    // buttons saying "Working" for good.
+    let busy = Memo::new(move |_| starting.get() || active.get().is_some());
     // Output of the operation currently running, newest last.
     let live = RwSignal::new(Vec::<String>::new());
-    let active = RwSignal::new(None::<i64>);
     let update = RwSignal::new(None::<UpdateStatus>);
-    let containers = RwSignal::new(Vec::<Container>::new());
+    let update_error = RwSignal::new(None::<String>);
     let auto_apply = RwSignal::new(false);
     let checking = RwSignal::new(false);
+    let toggling = RwSignal::new(false);
+    let forgetting = RwSignal::new(false);
     let screen = Screen::new();
+    // Reads overlap: an event, a reconnect and an action can each start
+    // one. Only the newest may land, or an answer from before a deploy
+    // began would say nothing is running.
+    let latest = StoredValue::new(0_u64);
+    // The newest operation heard to have finished. A quick one can finish
+    // before the answer to starting it arrives, and must not then be
+    // followed as if it were still running.
+    let finished = StoredValue::new(0_i64);
 
     // Reads for display: dropped if this screen is left mid-way.
     let refresh = move || {
+        let mine = latest.get_value() + 1;
+        latest.set_value(mine);
+        let current = move || latest.try_get_value() == Some(mine);
+        let stack_id = id.get_untracked();
         screen.load(async move {
-            match api::stack(id.get_untracked()).await {
-                Ok(s) => stack.set(Some(s)),
-                Err(e) => error.set(Some(e.message)),
+            let found = api::stack(stack_id).await;
+            if !current() {
+                return;
             }
-            if let Ok(board) = api::stacks(1).await
-                && let Some(slug) = stack.get_untracked().map(|s| s.slug)
-                && let Some(live) = board.into_iter().find(|s| s.project == slug)
-            {
-                containers.set(live.containers);
+            match found {
+                Ok(s) => {
+                    stack.set(Some(s));
+                    load_error.set(None);
+                }
+                Err(e) => load_error.set(Some(e.message)),
             }
-            if let Ok(list) = api::updates(1).await
-                && let Some(mine) = list.into_iter().find(|u| u.stack.id == id.get_untracked())
+
+            let board = api::stacks(1).await;
+            if !current() {
+                return;
+            }
+            // Without the stack there is no telling which row is its own.
+            if let Some(slug) = stack.get_untracked().map(|s| s.slug) {
+                containers.set(match board {
+                    Ok(board) => Load::Ready(
+                        board
+                            .into_iter()
+                            .find(|s| s.project == slug)
+                            .map(|s| s.containers)
+                            .unwrap_or_default(),
+                    ),
+                    Err(e) => Load::Failed(e.message),
+                });
+            }
+
+            let updates = api::updates(1).await;
+            if !current() {
+                return;
+            }
+            if let Ok(list) = updates
+                && let Some(mine) = list.into_iter().find(|u| u.stack.id == stack_id)
             {
                 auto_apply.set(mine.auto_apply);
                 update.set(Some(mine.status));
             }
-            if let Ok(list) = api::deployments(id.get_untracked()).await {
-                // An operation still running was started elsewhere, or is ours
-                // after a reload; either way the pane should follow it.
-                if let Some(running) = list.iter().find(|d| d.status == DeploymentStatus::Running) {
-                    active.set(Some(running.id));
-                    busy.set(true);
+
+            let deployments = api::deployments(stack_id).await;
+            if !current() {
+                return;
+            }
+            match deployments {
+                Ok(list) => {
+                    // An operation still running was started elsewhere, or
+                    // is ours after a reload; either way the pane follows
+                    // it. None running means none is, whatever was thought.
+                    active.set(
+                        list.iter()
+                            .find(|d| d.status == DeploymentStatus::Running)
+                            .map(|d| d.id),
+                    );
+                    history.set(Load::Ready(list));
                 }
-                history.set(list);
+                Err(e) => history.set(Load::Failed(e.message)),
             }
         });
     };
@@ -106,8 +165,10 @@ pub fn StackDetail() -> impl IntoView {
                 ..
             } if stack_id == id.get_untracked() => {
                 active.set(Some(deployment_id));
-                busy.set(true);
                 live.set(Vec::new());
+                // Also drops any read already under way, which may have
+                // been answered before this began.
+                refresh();
             }
             ServerEvent::DeploymentOutput {
                 deployment_id,
@@ -121,10 +182,12 @@ pub fn StackDetail() -> impl IntoView {
                 });
             }
             ServerEvent::DeploymentFinished { deployment }
-                if Some(deployment.id) == active.get_untracked() =>
+                if deployment.stack_id == id.get_untracked() =>
             {
-                busy.set(false);
-                active.set(None);
+                finished.set_value(finished.get_value().max(deployment.id));
+                if Some(deployment.id) == active.get_untracked() {
+                    active.set(None);
+                }
                 refresh();
             }
             _ => {}
@@ -135,34 +198,76 @@ pub fn StackDetail() -> impl IntoView {
         if busy.get_untracked() {
             return;
         }
-        busy.set(true);
+        starting.set(true);
         error.set(None);
         live.set(Vec::new());
+        // A read already under way may be answered from before this began.
+        latest.set_value(latest.get_value() + 1);
         // The operation runs on the server whether or not anyone stays here.
-        screen.act(
-            api::act(id.get_untracked(), action),
-            move |result| match result {
-                Ok(d) => active.set(Some(d.id)),
-                Err(e) => {
-                    error.set(Some(e.message));
-                    busy.set(false);
-                }
-            },
-        );
+        screen.act(api::act(id.get_untracked(), action), move |result| {
+            match result {
+                Ok(d) if d.id > finished.get_value() => active.set(Some(d.id)),
+                Ok(_) => {}
+                Err(e) => error.set(Some(e.message)),
+            }
+            starting.set(false);
+        });
     };
     let run = move |action: &'static str| move |_| start(action);
     let take_down = Callback::new(move |()| start("down"));
 
     let forget = Callback::new(move |()| {
+        if forgetting.get_untracked() {
+            return;
+        }
+        forgetting.set(true);
+        error.set(None);
         let navigate = navigate.clone();
         screen.act(
             api::delete_stack(id.get_untracked()),
             move |result| match result {
                 Ok(()) => navigate("/", Default::default()),
-                Err(e) => error.set(Some(e.message)),
+                Err(e) => {
+                    error.set(Some(e.message));
+                    forgetting.set(false);
+                }
             },
         );
     });
+
+    let check = move |_| {
+        if checking.get_untracked() {
+            return;
+        }
+        checking.set(true);
+        update_error.set(None);
+        screen.act(api::check_stack(id.get_untracked()), move |result| {
+            match result {
+                Ok(status) => update.set(Some(status)),
+                Err(e) => update_error.set(Some(e.message)),
+            }
+            checking.set(false);
+        });
+    };
+
+    let toggle_auto_apply = move |_| {
+        if toggling.get_untracked() {
+            return;
+        }
+        toggling.set(true);
+        update_error.set(None);
+        let next = !auto_apply.get_untracked();
+        screen.act(
+            api::set_auto_apply(id.get_untracked(), next),
+            move |result| {
+                match result {
+                    Ok(saved) => auto_apply.set(saved.enabled),
+                    Err(e) => update_error.set(Some(e.message)),
+                }
+                toggling.set(false);
+            },
+        );
+    };
 
     view! {
         <header class="topbar">
@@ -172,6 +277,9 @@ pub fn StackDetail() -> impl IntoView {
             <a class="topbar-link" href="/">"Back"</a>
         </header>
 
+        <Show when=move || load_error.get().is_some()>
+            <p class="notice" role="alert">{move || load_error.get().unwrap_or_default()}</p>
+        </Show>
         <Show when=move || error.get().is_some()>
             <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
         </Show>
@@ -202,29 +310,37 @@ pub fn StackDetail() -> impl IntoView {
         </Show>
 
         <h2 class="group-heading">"History"</h2>
-        {move || {
-            let list = history.get();
-            if list.is_empty() {
-                view! {
-                    <div class="state-note">
-                        <p>"Nothing has run yet."</p>
-                        <p>"Deploy to bring this stack up."</p>
-                    </div>
-                }
-                .into_any()
-            } else {
-                view! { <HistoryRows deployments=list /> }.into_any()
+        {move || match history.get() {
+            Load::Loading => view! { <p class="state-note">"Loading"</p> }.into_any(),
+            Load::Failed(message) => view! {
+                <div class="state-note">
+                    <p>"Could not read the history."</p>
+                    <p>{message}</p>
+                </div>
             }
+            .into_any(),
+            Load::Ready(list) if list.is_empty() => view! {
+                <div class="state-note">
+                    <p>"Nothing has run yet."</p>
+                    <p>"Deploy to bring this stack up."</p>
+                </div>
+            }
+            .into_any(),
+            Load::Ready(list) => view! { <HistoryRows deployments=list /> }.into_any(),
         }}
 
         <h2 class="group-heading">"Containers"</h2>
-        {move || {
-            let list = containers.get();
-            if list.is_empty() {
-                view! { <p class="entry-note">"Nothing is running for this stack."</p> }.into_any()
-            } else {
-                view! { <ContainerRows containers=list /> }.into_any()
+        {move || match containers.get() {
+            Load::Loading => view! { <p class="entry-note">"Reading containers"</p> }.into_any(),
+            Load::Failed(message) => view! {
+                <p class="entry-note">{format!("Could not read its containers. {message}")}</p>
             }
+            .into_any(),
+            Load::Ready(list) if list.is_empty() => view! {
+                <p class="entry-note">"Nothing is running for this stack."</p>
+            }
+            .into_any(),
+            Load::Ready(list) => view! { <ContainerRows containers=list /> }.into_any(),
         }}
 
         // Only once the stack is known: its name is the series' subject.
@@ -244,35 +360,23 @@ pub fn StackDetail() -> impl IntoView {
         <h2 class="group-heading">"Updates"</h2>
         <p class="entry-note">{move || update_summary(update.get().as_ref())}
         </p>
+        <Show when=move || update_error.get().is_some()>
+            <p class="notice" role="alert">{move || update_error.get().unwrap_or_default()}</p>
+        </Show>
         <div class="actions actions-pair">
             <button
                 class="button button-quiet"
                 type="button"
                 disabled=move || checking.get()
-                on:click=move |_| {
-                    if checking.get_untracked() { return; }
-                    checking.set(true);
-                    screen.act(api::check_stack(id.get_untracked()), move |result| {
-                        if let Ok(status) = result {
-                            update.set(Some(status));
-                        }
-                        checking.set(false);
-                    });
-                }
+                on:click=check
             >
                 {move || if checking.get() { "Checking" } else { "Check for updates" }}
             </button>
             <button
                 class="button button-quiet"
                 type="button"
-                on:click=move |_| {
-                    let next = !auto_apply.get_untracked();
-                    screen.act(api::set_auto_apply(id.get_untracked(), next), move |result| {
-                        if result.is_ok() {
-                            auto_apply.set(next);
-                        }
-                    });
-                }
+                disabled=move || toggling.get()
+                on:click=toggle_auto_apply
             >
                 {move || if auto_apply.get() { "Auto-apply: on" } else { "Auto-apply: off" }}
             </button>
@@ -339,7 +443,12 @@ pub fn StackDetail() -> impl IntoView {
             "Removes the containers and networks. Named volumes and the registration stay, \
              so Deploy brings it back with its data."
         </p>
-        <Confirm label="Forget this stack" confirm="Forget it" on_confirm=forget />
+        <Confirm
+            label="Forget this stack"
+            confirm="Forget it"
+            disabled=Signal::derive(move || forgetting.get())
+            on_confirm=forget
+        />
         <p class="entry-note">
             "Removes it from GhostDock only. Whatever is running keeps running."
         </p>
@@ -413,7 +522,7 @@ fn HistoryRows(deployments: Vec<Deployment>) -> impl IntoView {
                             .exit_code
                             .map_or_else(|| "failed".to_owned(), |c| format!("failed (exit {c})")),
                     };
-                    let when = d.started_at.format("%d %b %H:%M").to_string();
+                    let when = crate::time::local(d.started_at, "%d %b %H:%M");
                     let href = format!("/deployments/{}", d.id);
                     view! {
                         <li class="row">

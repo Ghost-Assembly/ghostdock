@@ -8,27 +8,25 @@ use leptos::prelude::*;
 use shared::source::{Credential, NewCredential, NewRepo, Repo};
 
 use crate::api;
+use crate::confirm::Confirm;
+use crate::load::Load;
 use crate::screen::Screen;
 
 #[component]
 pub fn Sources() -> impl IntoView {
     let screen = Screen::new();
-    let repos = RwSignal::new(Vec::<Repo>::new());
-    let credentials = RwSignal::new(Vec::<Credential>::new());
+    let repos = RwSignal::new(Load::<Vec<Repo>>::Loading);
+    let credentials = RwSignal::new(Load::<Vec<Credential>>::Loading);
+    // Something asked of the server failed.
     let error = RwSignal::new(None::<String>);
-    let loaded = RwSignal::new(false);
+    // The forms choose from what has been read, or from nothing yet.
+    let credential_list =
+        Signal::derive(move || credentials.with(|c| c.ready().cloned().unwrap_or_default()));
 
     let refresh = move || {
         screen.load(async move {
-            match api::repos().await {
-                Ok(list) => repos.set(list),
-                Err(e) => error.set(Some(e.message)),
-            }
-            match api::credentials().await {
-                Ok(list) => credentials.set(list),
-                Err(e) => error.set(Some(e.message)),
-            }
-            loaded.set(true);
+            repos.set(Load::from(api::repos().await));
+            credentials.set(Load::from(api::credentials().await));
         });
     };
     Effect::new(move |_| refresh());
@@ -44,34 +42,44 @@ pub fn Sources() -> impl IntoView {
         </Show>
 
         <h2 class="group-heading">"Repositories"</h2>
-        {move || {
-            let list = repos.get();
-            if list.is_empty() {
-                view! {
-                    <div class="state-note">
-                        <p>"No repositories yet."</p>
-                        <p>"Add one to deploy stacks from a compose file you keep in Git."</p>
-                    </div>
-                }
-                .into_any()
-            } else {
-                view! { <RepoRows repos=list /> }.into_any()
+        {move || match repos.get() {
+            Load::Loading => view! { <p class="state-note">"Loading"</p> }.into_any(),
+            Load::Failed(message) => view! {
+                <div class="state-note">
+                    <p>"Could not read the repositories."</p>
+                    <p>{message}</p>
+                </div>
             }
+            .into_any(),
+            Load::Ready(list) if list.is_empty() => view! {
+                <div class="state-note">
+                    <p>"No repositories yet."</p>
+                    <p>"Add one to deploy stacks from a compose file you keep in Git."</p>
+                </div>
+            }
+            .into_any(),
+            Load::Ready(list) => view! { <RepoRows repos=list /> }.into_any(),
         }}
-        <NewRepoForm credentials on_added=refresh />
+        <NewRepoForm credentials=credential_list on_added=refresh />
 
         <h2 class="group-heading">"Credentials"</h2>
-        {move || {
-            let list = credentials.get();
-            if list.is_empty() {
-                view! {
-                    <div class="state-note">
-                        <p>"No credentials yet."</p>
-                        <p>"A public repository needs none; a private one needs a token."</p>
-                    </div>
-                }
-                .into_any()
-            } else {
+        {move || match credentials.get() {
+            Load::Loading => view! { <p class="state-note">"Loading"</p> }.into_any(),
+            Load::Failed(message) => view! {
+                <div class="state-note">
+                    <p>"Could not read the credentials."</p>
+                    <p>{message}</p>
+                </div>
+            }
+            .into_any(),
+            Load::Ready(list) if list.is_empty() => view! {
+                <div class="state-note">
+                    <p>"No credentials yet."</p>
+                    <p>"A public repository needs none; a private one needs a token."</p>
+                </div>
+            }
+            .into_any(),
+            Load::Ready(list) => {
                 view! { <CredentialRows credentials=list on_change=refresh error /> }.into_any()
             }
         }}
@@ -113,13 +121,20 @@ fn CredentialRows(
     error: RwSignal<Option<String>>,
 ) -> impl IntoView {
     let screen = Screen::new();
+    // One removal at a time, so a second pair of taps cannot send it twice.
+    let removing = RwSignal::new(false);
     view! {
         <ul class="rows">
             {credentials
                 .into_iter()
                 .map(|credential| {
                     let id = credential.id;
-                    let remove = move |_| {
+                    let remove = Callback::new(move |()| {
+                        if removing.get_untracked() {
+                            return;
+                        }
+                        removing.set(true);
+                        error.set(None);
                         screen.act(
                             async move { api::delete_credential(id).await },
                             move |result| {
@@ -127,18 +142,23 @@ fn CredentialRows(
                                     Ok(()) => on_change(),
                                     Err(e) => error.set(Some(e.message)),
                                 }
+                                removing.set(false);
                             },
                         );
-                    };
+                    });
                     view! {
                         <li class="row">
                             <span class="row-link">
                                 <span class="row-bar" data-state="running"></span>
                                 <span class="row-name">{credential.name.clone()}</span>
                                 <span class="row-detail">{credential.username.clone()}</span>
-                                <button class="row-action" type="button" on:click=remove>
-                                    "Remove"
-                                </button>
+                                <Confirm
+                                    label="Remove"
+                                    confirm="Remove it"
+                                    row=true
+                                    disabled=Signal::derive(move || removing.get())
+                                    on_confirm=remove
+                                />
                             </span>
                         </li>
                     }
@@ -150,7 +170,7 @@ fn CredentialRows(
 
 #[component]
 fn NewRepoForm(
-    credentials: RwSignal<Vec<Credential>>,
+    credentials: Signal<Vec<Credential>>,
     on_added: impl Fn() + Copy + Send + Sync + 'static,
 ) -> impl IntoView {
     let screen = Screen::new();
@@ -208,12 +228,28 @@ fn NewRepoForm(
                     prop:value=move || credential_id.get()
                     on:change=move |ev| credential_id.set(event_target_value(&ev))
                 >
-                    <option value="">"None (public repository)"</option>
+                    <option value="" selected=move || credential_id.with(String::is_empty)>
+                        "None (public repository)"
+                    </option>
+                    // Each option says whether it is the chosen one: when the
+                    // list is read again its options are new, and a select
+                    // left to itself would fall back to the first.
                     {move || {
                         credentials
                             .get()
                             .into_iter()
-                            .map(|c| view! { <option value=c.id.to_string()>{c.name}</option> })
+                            .map(|c| {
+                                let value = c.id.to_string();
+                                let mine = value.clone();
+                                view! {
+                                    <option
+                                        value=value
+                                        selected=move || credential_id.with(|chosen| *chosen == mine)
+                                    >
+                                        {c.name}
+                                    </option>
+                                }
+                            })
                             .collect_view()
                     }}
                 </select>

@@ -9,14 +9,16 @@
 //! only the last one. Signals model current state; this is a stream, and
 //! every message has to arrive.
 
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use leptos::prelude::*;
 use shared::event::ServerEvent;
-use wasm_bindgen::JsCast;
-use wasm_bindgen::closure::Closure;
-use web_sys::{MessageEvent, WebSocket};
+use web_sys::MessageEvent;
+
+use crate::socket;
 
 // `Send + Sync` because Leptos's lifecycle hooks require it in order to
 // support server-side rendering. Wasm is single threaded, so the Mutex never
@@ -30,6 +32,8 @@ pub struct Events {
     handlers: Arc<Mutex<Vec<(u64, Handler)>>>,
     reconnect: Arc<Mutex<Vec<(u64, Reconnect)>>>,
     next_id: Arc<AtomicU64>,
+    /// True while the connection is down and being retried.
+    paused: RwSignal<bool>,
 }
 
 impl Events {
@@ -38,7 +42,15 @@ impl Events {
             handlers: Arc::new(Mutex::new(Vec::new())),
             reconnect: Arc::new(Mutex::new(Vec::new())),
             next_id: Arc::new(AtomicU64::new(0)),
+            paused: RwSignal::new(false),
         }
+    }
+
+    /// Whether live updates have stopped arriving for now. Whatever is on
+    /// screen may be out of date until they resume.
+    #[must_use]
+    pub fn paused(&self) -> ReadSignal<bool> {
+        self.paused.read_only()
     }
 
     /// Calls `handler` for every event, until the calling view is disposed.
@@ -129,34 +141,62 @@ impl Events {
 /// per tab held one each for good, so a sixth tab froze waiting for a slot.
 /// WebSockets do not count against that limit. Unlike an `EventSource` they
 /// do not reconnect by themselves, so that is done here, with backoff.
-pub fn provide(path: &str) {
+pub fn provide(path: &str) -> Events {
     let events = Events::new();
     let generation = GENERATION.with(|g| {
         let next = g.get() + 1;
         g.set(next);
         next
     });
-    connect(events.clone(), socket_url(path), generation, 0, false);
+    let link = Link {
+        events: events.clone(),
+        url: socket::url(path),
+        generation,
+    };
+    connect(link.clone(), 0, false);
+
+    // A phone puts a page in the background to sleep and drops its
+    // connections; a laptop loses its network. The moment either is usable
+    // again is the moment to reconnect, not whenever the backoff comes round.
+    let online_link = link.clone();
+    let online = window_event_listener(leptos::ev::online, move |_| kick(&online_link));
+    let visible = window_event_listener_untyped("visibilitychange", move |_| {
+        let hidden = web_sys::window()
+            .and_then(|w| w.document())
+            .is_none_or(|d| d.hidden());
+        if !hidden {
+            kick(&link);
+        }
+    });
+
     on_cleanup(move || {
+        online.remove();
+        visible.remove();
         // Signing out ends this bus: stop reconnecting and close.
         GENERATION.with(|g| {
             if g.get() == generation {
                 g.set(generation + 1);
             }
         });
+        WAITING.with(|w| w.set(None));
         SOCKET.with(|s| s.borrow_mut().take());
     });
-    provide_context(events);
+    provide_context(events.clone());
+    events
 }
 
 thread_local! {
     /// Bumped to stop an earlier bus's reconnect loop.
-    static GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static GENERATION: Cell<u64> = const { Cell::new(0) };
     /// The open socket and the callbacks the browser holds for it. Kept
-    /// here, not leaked, so a reconnect frees the previous connection's.
-    static SOCKET: std::cell::RefCell<Option<Connection>> = const { std::cell::RefCell::new(None) };
+    /// here, not leaked, so a reconnect closes and frees the previous one.
+    static SOCKET: RefCell<Option<socket::Owned>> = const { RefCell::new(None) };
     /// Views currently showing live figures.
-    static WATCHERS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static WATCHERS: Cell<u32> = const { Cell::new(0) };
+    /// The retry now scheduled, if any. Only that one may run, so
+    /// reconnecting early turns the timer already set into a no-op.
+    static WAITING: Cell<Option<u64>> = const { Cell::new(None) };
+    static NEXT_RETRY: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Tells the server whether to send figures. A socket still connecting
@@ -168,105 +208,104 @@ fn send_watch(on: bool) {
         r#"{"unwatch":"metrics"}"#
     };
     SOCKET.with(|s| {
-        if let Some(c) = s.borrow().as_ref() {
-            let _ = c.socket.send_with_str(text);
+        if let Some(socket) = s.borrow().as_ref() {
+            socket.send(text);
         }
     });
 }
 
-struct Connection {
-    socket: WebSocket,
-    _message: Closure<dyn FnMut(MessageEvent)>,
-    _open: Closure<dyn FnMut()>,
-    _close: Closure<dyn FnMut()>,
-}
-
-impl Drop for Connection {
-    fn drop(&mut self) {
-        self.socket.set_onclose(None);
-        let _ = self.socket.close();
-    }
+/// Where to connect, and for which bus.
+#[derive(Clone)]
+struct Link {
+    events: Events,
+    url: String,
+    generation: u64,
 }
 
 const FIRST_RETRY_MS: u32 = 1_000;
 const LONGEST_RETRY_MS: u32 = 30_000;
 
-fn socket_url(path: &str) -> String {
-    let location = web_sys::window().map(|w| w.location());
-    let host = location
-        .as_ref()
-        .and_then(|l| l.host().ok())
-        .unwrap_or_default();
-    let secure = location
-        .as_ref()
-        .and_then(|l| l.protocol().ok())
-        .is_some_and(|p| p == "https:");
-    format!("{}://{host}{path}", if secure { "wss" } else { "ws" })
-}
-
-fn connect(events: Events, url: String, generation: u64, attempt: u32, was_open: bool) {
-    if GENERATION.with(std::cell::Cell::get) != generation {
+fn connect(link: Link, attempt: u32, was_open: bool) {
+    if GENERATION.with(Cell::get) != link.generation {
         return;
     }
-    let Ok(socket) = WebSocket::new(&url) else {
-        retry(events, url, generation, attempt, was_open);
+    WAITING.with(|w| w.set(None));
+    let Ok(socket) = socket::Owned::connect(&link.url) else {
+        retry(link, attempt, was_open);
         return;
     };
 
-    let dispatcher = events.clone();
-    let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |ev: MessageEvent| {
-        let Some(text) = ev.data().as_string() else {
-            return;
-        };
-        match serde_json::from_str::<ServerEvent>(&text) {
-            Ok(event) => dispatcher.dispatch(&event),
-            // A server and client from different builds; not a reason to
-            // drop the connection.
-            Err(e) => leptos::logging::warn!("unreadable server event: {e}"),
-        }
-    });
-    let reconnected = events.clone();
-    let on_open = Closure::<dyn FnMut()>::new(move || {
-        // Events during the gap are not replayed: views reload instead.
-        if was_open {
-            reconnected.reconnected();
-        }
-        // The server forgets what a closed socket watched.
-        if WATCHERS.with(std::cell::Cell::get) > 0 {
-            send_watch(true);
-        }
-    });
-    let (again, again_url) = (events, url);
-    let on_close = Closure::<dyn FnMut()>::new(move || {
-        retry(again.clone(), again_url.clone(), generation, attempt, true);
-    });
-    socket.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-    socket.set_onopen(Some(on_open.as_ref().unchecked_ref()));
-    socket.set_onclose(Some(on_close.as_ref().unchecked_ref()));
-
-    // Replacing the previous connection drops its callbacks. This never runs
-    // inside one of them: reconnects are scheduled, not called directly.
-    SOCKET.with(|s| {
-        *s.borrow_mut() = Some(Connection {
-            socket,
-            _message: on_message,
-            _open: on_open,
-            _close: on_close,
+    let dispatcher = link.events.clone();
+    let opened = Rc::new(Cell::new(false));
+    let (now_open, events) = (Rc::clone(&opened), link.events.clone());
+    let socket = socket
+        .on_message(move |ev: MessageEvent| {
+            let Some(text) = ev.data().as_string() else {
+                return;
+            };
+            match serde_json::from_str::<ServerEvent>(&text) {
+                Ok(event) => dispatcher.dispatch(&event),
+                // A server and client from different builds; not a reason
+                // to drop the connection.
+                Err(e) => leptos::logging::warn!("unreadable server event: {e}"),
+            }
+        })
+        .on_open(move || {
+            now_open.set(true);
+            events.paused.set(false);
+            // Events during the gap are not replayed: views reload instead.
+            if was_open {
+                events.reconnected();
+            }
+            // The server forgets what a closed socket watched.
+            if WATCHERS.with(Cell::get) > 0 {
+                send_watch(true);
+            }
+        })
+        .on_close(move |_| {
+            link.events.paused.set(true);
+            // A connection that worked starts the backoff over: one drop
+            // after a day connected should not wait as long as the tenth
+            // failure in a row.
+            let attempt = if opened.get() { 0 } else { attempt };
+            retry(link.clone(), attempt, true);
         });
-    });
+
+    // Replacing the previous connection closes it and drops its callbacks.
+    // This never runs inside one of them: reconnects are scheduled, or come
+    // from a window event, and are never called from a socket's handler.
+    SOCKET.with(|s| *s.borrow_mut() = Some(socket));
 }
 
 // The bus belongs to the signed-in app, not to a screen, so its timer is not
-// a Screen's; the generation check above is what stops it on sign-out.
+// a Screen's; the generation check in `connect` is what stops it on sign-out.
 #[allow(clippy::disallowed_methods)]
-fn retry(events: Events, url: String, generation: u64, attempt: u32, was_open: bool) {
+fn retry(link: Link, attempt: u32, was_open: bool) {
     let delay = FIRST_RETRY_MS
         .saturating_mul(1 << attempt.min(5))
         .min(LONGEST_RETRY_MS);
+    let ticket = NEXT_RETRY.with(|n| {
+        let next = n.get() + 1;
+        n.set(next);
+        next
+    });
+    WAITING.with(|w| w.set(Some(ticket)));
     set_timeout(
-        move || connect(events, url, generation, attempt + 1, was_open),
+        move || {
+            if WAITING.with(Cell::get) == Some(ticket) {
+                connect(link, attempt + 1, was_open);
+            }
+        },
         std::time::Duration::from_millis(u64::from(delay)),
     );
+}
+
+/// Reconnects at once if the bus is waiting to retry. An open socket, or
+/// one still connecting, is left alone.
+fn kick(link: &Link) {
+    if WAITING.with(Cell::get).is_some() {
+        connect(link.clone(), 0, true);
+    }
 }
 
 /// The shared event stream, if one was provided.

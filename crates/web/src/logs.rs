@@ -10,12 +10,10 @@ use leptos::html::Pre;
 use leptos::prelude::*;
 use leptos_router::hooks::use_params_map;
 use shared::logs::{LogLine, Resume, Stream};
-use wasm_bindgen::JsCast;
-use wasm_bindgen::closure::Closure;
-use web_sys::{CloseEvent, MessageEvent, WebSocket};
+use web_sys::{CloseEvent, MessageEvent};
 
-use crate::api;
 use crate::screen::Screen;
+use crate::{api, socket};
 
 /// Most lines kept on screen. Following a chatty container for an hour would
 /// otherwise grow the page until the phone gives up.
@@ -40,40 +38,15 @@ struct Row {
     lower: Arc<str>,
 }
 
-/// An open follow socket. Dropping it closes the connection and frees the
-/// callbacks the browser was holding, without reporting the close as an
-/// ending: whoever dropped it already knows.
-struct Follower {
-    socket: WebSocket,
-    _line: Closure<dyn FnMut(MessageEvent)>,
-    _close: Closure<dyn FnMut(CloseEvent)>,
-}
-
-impl Drop for Follower {
-    fn drop(&mut self) {
-        self.socket.set_onclose(None);
-        let _ = self.socket.close();
-    }
-}
-
 /// A WebSocket rather than an `EventSource`: a request held open takes one
 /// of the six connections a browser allows per host over HTTP/1.1, shared
 /// by every tab, and enough of them freeze the app.
 fn follow_url(container: &str, since: Option<i64>) -> String {
-    let location = web_sys::window().map(|w| w.location());
-    let host = location
-        .as_ref()
-        .and_then(|l| l.host().ok())
-        .unwrap_or_default();
-    let secure = location
-        .as_ref()
-        .and_then(|l| l.protocol().ok())
-        .is_some_and(|p| p == "https:");
     let since = since.map_or_else(String::new, |t| format!("?since={t}"));
-    format!(
-        "{}://{host}/api/v1/hosts/1/containers/{container}/logs/socket{since}",
-        if secure { "wss" } else { "ws" }
-    )
+    socket::url(&format!(
+        "/api/v1/hosts/1/containers/{}/logs/socket{since}",
+        api::component(container)
+    ))
 }
 
 #[component]
@@ -94,7 +67,7 @@ pub fn ContainerLogs() -> impl IntoView {
     let filter = RwSignal::new(String::new());
     let errors_only = RwSignal::new(false);
     let following = RwSignal::new(false);
-    let follower = StoredValue::new_local(None::<Follower>);
+    let follower = StoredValue::new_local(None::<socket::Owned>);
     let pane = NodeRef::<Pre>::new();
     let screen = Screen::new();
 
@@ -117,13 +90,30 @@ pub fn ContainerLogs() -> impl IntoView {
         next_seq.set_value(seq);
     };
 
+    // Only the newest read may land: moving to another container leaves
+    // the previous one's in flight.
+    let latest = StoredValue::new(0_u64);
     Effect::new(move |_| {
         let container = id.get();
+        // Another container: nothing shown or followed belongs to it.
+        follower.set_value(None);
+        following.set(false);
+        pending.set_value(Vec::new());
+        lines.set(Vec::new());
+        loaded.set(false);
+        error.set(None);
+        note.set(None);
+        let mine = latest.get_value() + 1;
+        latest.set_value(mine);
         if container.is_empty() {
             return;
         }
         screen.load(async move {
-            match api::container_logs(1, &container).await {
+            let answer = api::container_logs(1, &container).await;
+            if latest.try_get_value() != Some(mine) {
+                return;
+            }
+            match answer {
                 Ok(fetched) => push(fetched.lines),
                 Err(e) => error.set(Some(e.message)),
             }
@@ -142,59 +132,54 @@ pub fn ContainerLogs() -> impl IntoView {
         // overlap is matched line by line rather than by timestamp.
         let resume = lines.with_untracked(|all| Resume::after(all.iter().map(|row| &*row.line)));
         let url = follow_url(&id.get_untracked(), resume.since());
-        let Ok(socket) = WebSocket::new(&url) else {
+        let Ok(opened) = socket::Owned::connect(&url) else {
             note.set(Some("Could not start following."));
             return;
         };
 
-        let on_line = Closure::<dyn FnMut(MessageEvent)>::new(move |ev: MessageEvent| {
-            let Some(text) = ev.data().as_string() else {
-                return;
-            };
-            let Ok(line) = serde_json::from_str::<LogLine>(&text) else {
-                return;
-            };
-            if !resume.is_new(&line) {
-                return;
-            }
-            pending.update_value(|batch| batch.push(line));
-            if flush_scheduled.get_value() {
-                return;
-            }
-            flush_scheduled.set_value(true);
-            // One update per frame, however many lines arrive in it.
-            screen.next_frame(move || {
-                flush_scheduled.set_value(false);
-                let batch = std::mem::take(&mut *pending.write_value());
-                let pinned = pane.get_untracked().is_none_or(|el| {
-                    el.scroll_top() + el.client_height() >= el.scroll_height() - PINNED_WITHIN
-                });
-                push(batch);
-                if pinned {
-                    screen.next_frame(move || {
-                        if let Some(el) = pane.get_untracked() {
-                            el.set_scroll_top(el.scroll_height());
-                        }
-                    });
+        let opened = opened
+            .on_message(move |ev: MessageEvent| {
+                let Some(text) = ev.data().as_string() else {
+                    return;
+                };
+                let Ok(line) = serde_json::from_str::<LogLine>(&text) else {
+                    return;
+                };
+                if !resume.is_new(&line) {
+                    return;
                 }
+                pending.update_value(|batch| batch.push(line));
+                if flush_scheduled.get_value() {
+                    return;
+                }
+                flush_scheduled.set_value(true);
+                // One update per frame, however many lines arrive in it.
+                screen.next_frame(move || {
+                    flush_scheduled.set_value(false);
+                    let batch = std::mem::take(&mut *pending.write_value());
+                    let pinned = pane.get_untracked().is_none_or(|el| {
+                        el.scroll_top() + el.client_height() >= el.scroll_height() - PINNED_WITHIN
+                    });
+                    push(batch);
+                    if pinned {
+                        screen.next_frame(move || {
+                            if let Some(el) = pane.get_untracked() {
+                                el.set_scroll_top(el.scroll_height());
+                            }
+                        });
+                    }
+                });
+            })
+            // Not reconnected automatically: a reconnect would replay lines.
+            .on_close(move |ev: CloseEvent| {
+                stop(Some(match ev.reason().as_str() {
+                    "stopped" => "The container stopped, so there is nothing more to follow.",
+                    "revoked" => "Access to these logs was withdrawn.",
+                    _ => "Following stopped. Tap Follow to pick up again.",
+                }));
             });
-        });
-        // Not reconnected automatically: a reconnect would replay lines.
-        let on_close = Closure::<dyn FnMut(CloseEvent)>::new(move |ev: CloseEvent| {
-            stop(Some(match ev.reason().as_str() {
-                "stopped" => "The container stopped, so there is nothing more to follow.",
-                "revoked" => "Access to these logs was withdrawn.",
-                _ => "Following stopped. Tap Follow to pick up again.",
-            }));
-        });
-        socket.set_onmessage(Some(on_line.as_ref().unchecked_ref()));
-        socket.set_onclose(Some(on_close.as_ref().unchecked_ref()));
 
-        follower.set_value(Some(Follower {
-            socket,
-            _line: on_line,
-            _close: on_close,
-        }));
+        follower.set_value(Some(opened));
         following.set(true);
         note.set(None);
     };

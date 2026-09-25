@@ -31,6 +31,11 @@ pub fn DiscoverStacks() -> impl IntoView {
     let imported = RwSignal::new(None::<ImportResult>);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    let removing = RwSignal::new(false);
+    // The branch and pattern the list on screen came from. Registering uses
+    // these, not whatever the fields say now: someone who edits a field
+    // after looking must not register paths from one branch against another.
+    let looked = StoredValue::new(None::<(String, String)>);
 
     Effect::new(move |_| {
         let id = repo_id.get();
@@ -49,12 +54,20 @@ pub fn DiscoverStacks() -> impl IntoView {
 
     let navigate = use_navigate();
     let remove = Callback::new(move |()| {
+        if removing.get_untracked() {
+            return;
+        }
+        removing.set(true);
+        error.set(None);
         let navigate = navigate.clone();
         screen.act(
             async move { api::delete_repo(repo_id.get_untracked()).await },
             move |result| match result {
                 Ok(()) => navigate("/sources", Default::default()),
-                Err(e) => error.set(Some(e.message)),
+                Err(e) => {
+                    error.set(Some(e.message));
+                    removing.set(false);
+                }
             },
         );
     });
@@ -87,6 +100,7 @@ pub fn DiscoverStacks() -> impl IntoView {
             git_ref: git_ref.get_untracked(),
             pattern: Some(pattern.get_untracked()).filter(|p| !p.trim().is_empty()),
         };
+        let asked_ref = request.git_ref.clone();
         screen.load(async move {
             match api::discover(repo_id.get_untracked(), &request).await {
                 Ok(found) => {
@@ -101,6 +115,7 @@ pub fn DiscoverStacks() -> impl IntoView {
                             .collect(),
                     );
                     pattern.set(found.pattern.clone());
+                    looked.set_value(Some((asked_ref, found.pattern.clone())));
                     discovery.set(Some(found));
                 }
                 Err(e) => error.set(Some(e.message)),
@@ -113,11 +128,14 @@ pub fn DiscoverStacks() -> impl IntoView {
         if busy.get_untracked() {
             return;
         }
+        let Some((git_ref, pattern)) = looked.get_value() else {
+            return;
+        };
         busy.set(true);
         error.set(None);
         let request = ImportRequest {
-            git_ref: git_ref.get_untracked(),
-            pattern: Some(pattern.get_untracked()),
+            git_ref,
+            pattern: Some(pattern),
             paths: chosen.get_untracked(),
         };
         screen.act(
@@ -127,6 +145,7 @@ pub fn DiscoverStacks() -> impl IntoView {
                     Ok(done) => {
                         imported.set(Some(done));
                         discovery.set(None);
+                        looked.set_value(None);
                         chosen.set(Vec::new());
                     }
                     Err(e) => error.set(Some(e.message)),
@@ -312,7 +331,12 @@ pub fn DiscoverStacks() -> impl IntoView {
         </p>
 
         <h2 class="group-heading">"Danger"</h2>
-        <Confirm label="Remove repository" confirm="Remove it" on_confirm=remove />
+        <Confirm
+            label="Remove repository"
+            confirm="Remove it"
+            disabled=Signal::derive(move || removing.get())
+            on_confirm=remove
+        />
         <p class="entry-note">
             "Only possible once no stack is registered from it. Nothing it deployed is touched."
         </p>
