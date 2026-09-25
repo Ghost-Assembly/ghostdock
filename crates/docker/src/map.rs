@@ -6,12 +6,34 @@
 use bollard::models::{
     ContainerSummary, ContainerSummaryHealthStatusEnum, ContainerSummaryStateEnum, PortSummary,
 };
+use std::collections::HashMap;
+
 use chrono::DateTime;
 use shared::container::{ComposeMembership, Container, ContainerState, Health, Port};
 
 /// Compose writes these onto every container it creates.
 pub const LABEL_PROJECT: &str = "com.docker.compose.project";
 pub const LABEL_SERVICE: &str = "com.docker.compose.service";
+
+/// A container with every label it was created with, for a read that needs
+/// labels the wire type does not carry, such as the one choosing a stack's
+/// icon. Labels stay on the server: they can hold anything, credentials
+/// included, so they are never sent as they are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Labeled {
+    pub container: Container,
+    pub labels: HashMap<String, String>,
+}
+
+/// [`to_container`], keeping the labels.
+#[must_use]
+pub fn to_labeled(summary: ContainerSummary) -> Labeled {
+    let labels = summary.labels.clone().unwrap_or_default();
+    Labeled {
+        container: to_container(summary),
+        labels,
+    }
+}
 
 /// Converts one daemon container summary into the wire type.
 #[must_use]
@@ -121,9 +143,7 @@ fn map_port(port: PortSummary) -> Port {
 }
 
 /// Both labels are required: a project without a service is not addressable.
-fn map_compose(
-    labels: Option<&std::collections::HashMap<String, String>>,
-) -> Option<ComposeMembership> {
+fn map_compose(labels: Option<&HashMap<String, String>>) -> Option<ComposeMembership> {
     let labels = labels?;
     Some(ComposeMembership {
         project: labels.get(LABEL_PROJECT)?.clone(),

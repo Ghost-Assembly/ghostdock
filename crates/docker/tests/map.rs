@@ -4,7 +4,7 @@ use bollard::models::{
     ContainerSummary, ContainerSummaryHealth, ContainerSummaryHealthStatusEnum,
     ContainerSummaryStateEnum, PortSummary, PortSummaryTypeEnum,
 };
-use docker::map::{LABEL_PROJECT, LABEL_SERVICE, to_container};
+use docker::map::{LABEL_PROJECT, LABEL_SERVICE, to_container, to_labeled};
 use shared::container::{ContainerState, Health};
 use std::collections::HashMap;
 
@@ -61,6 +61,22 @@ fn reads_compose_membership_from_labels() {
     let membership = to_container(s).compose.expect("compose labels present");
     assert_eq!(membership.project, "blog");
     assert_eq!(membership.service, "web");
+}
+
+#[test]
+fn labeled_keeps_every_label_beside_the_container() {
+    let mut s = summary();
+    s.labels = Some(HashMap::from([
+        (LABEL_PROJECT.to_owned(), "blog".to_owned()),
+        (LABEL_SERVICE.to_owned(), "web".to_owned()),
+        ("ghostdock.icon".to_owned(), "nginx".to_owned()),
+    ]));
+
+    let labeled = to_labeled(s.clone());
+    assert_eq!(labeled.container, to_container(s));
+    assert_eq!(labeled.labels.len(), 3);
+    assert_eq!(labeled.labels["ghostdock.icon"], "nginx");
+    assert!(to_labeled(summary()).labels.is_empty());
 }
 
 #[test]

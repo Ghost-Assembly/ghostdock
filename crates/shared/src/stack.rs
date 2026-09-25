@@ -49,4 +49,9 @@ pub struct Stack {
     pub total_count: usize,
     /// `None` for a stack running on the host that GhostDock does not manage.
     pub managed: Option<Managed>,
+    /// The software it runs, as the name of a bundled icon (served at
+    /// `/brand-icons/<icon>.svg`). `None` when nothing it runs is known;
+    /// the UI then shows the stack's initials.
+    #[serde(default)]
+    pub icon: Option<String>,
 }

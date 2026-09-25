@@ -3,8 +3,11 @@
 //! Every route sits beneath a host id even though v1 manages exactly one
 //! host, so adding more later is routing, not a redesign.
 
+use std::collections::HashMap;
+
 use axum::Json;
 use axum::extract::{Path, State};
+use domain::icon::Service;
 use shared::container::Container;
 use shared::host::{Host, HostInfo};
 use shared::reference::Access;
@@ -80,7 +83,16 @@ async fn list_stacks(
     Path(host_id): Path<i64>,
 ) -> Result<Json<Vec<Stack>>, ApiError> {
     let client = daemon(&state, host_id).await?;
-    let containers = client.list_containers().await?;
+    let mut labels = HashMap::new();
+    let containers = client
+        .list_labeled()
+        .await?
+        .into_iter()
+        .map(|listed| {
+            labels.insert(listed.container.id.clone(), listed.labels);
+            listed.container
+        })
+        .collect();
 
     let managed = state
         .store
@@ -101,7 +113,15 @@ async fn list_stacks(
         })
         .collect();
 
-    Ok(Json(domain::stack::merge(containers, managed).stacks))
+    let mut stacks = domain::stack::merge(containers, managed).stacks;
+    for stack in &mut stacks {
+        let services = stack.containers.iter().map(|c| Service {
+            image: &c.image,
+            labels: labels.get(&c.id),
+        });
+        stack.icon = domain::icon::for_stack(services, &stack.project).map(str::to_owned);
+    }
+    Ok(Json(stacks))
 }
 
 /// The host `host_id` names, or a 404.
