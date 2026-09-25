@@ -263,6 +263,86 @@ pub struct Recommendation {
 
 const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
 
+/// `value` with `places` decimals, as `format!("{value:.places$}")` lays it
+/// out: halves go to the even digit, and the sign stays on a negative that
+/// rounds to zero.
+///
+/// Worked in integers because formatting a float compiles in Rust's whole
+/// float printer, about 12 KB of the web client for figures that never need
+/// more than a few decimals. Exact, like Rust's: the rounding is done on the
+/// float's own binary value, not on a product that may itself have rounded.
+/// Saturates past `u64::MAX` units of the last place.
+#[must_use]
+pub fn fixed(value: f64, places: u8) -> String {
+    if value.is_nan() {
+        return "NaN".to_owned();
+    }
+    let sign = if value.is_sign_negative() { "-" } else { "" };
+    if value.is_infinite() {
+        return format!("{sign}inf");
+    }
+    let factor = 10_u64.pow(u32::from(places));
+    let scaled = scale_exactly(value.abs(), factor);
+    let whole = scaled / factor;
+    if places == 0 {
+        return format!("{sign}{whole}");
+    }
+    let width = usize::from(places);
+    format!("{sign}{whole}.{:0width$}", scaled % factor)
+}
+
+/// `value * factor` rounded to a whole number, halves to even, computed on
+/// the exact binary value: `value` is `mantissa * 2^exponent`.
+fn scale_exactly(value: f64, factor: u64) -> u64 {
+    let bits = value.to_bits();
+    let biased = (bits >> 52) & 0x7ff;
+    let fraction = bits & ((1 << 52) - 1);
+    let (mantissa, exponent) = if biased == 0 {
+        (fraction, -1074_i64)
+    } else {
+        #[allow(clippy::cast_possible_wrap)] // 11 bits.
+        (fraction | (1 << 52), biased as i64 - 1075)
+    };
+    // Below 2^63: a 53-bit mantissa times a factor under 2^10 per place.
+    let n = u128::from(mantissa) * u128::from(factor);
+    if exponent >= 0 {
+        // A whole number already; past 2^64 it saturates either way.
+        return u32::try_from(exponent)
+            .ok()
+            .filter(|e| *e < 64)
+            .and_then(|e| u64::try_from(n << e).ok())
+            .unwrap_or(u64::MAX);
+    }
+    let Ok(shift) = u32::try_from(-exponent) else {
+        return 0;
+    };
+    if shift >= 127 {
+        // Less than a half of the last place.
+        return 0;
+    }
+    let whole = n >> shift;
+    let rest = n - (whole << shift);
+    let half = 1_u128 << (shift - 1);
+    let rounded = if rest > half || (rest == half && whole & 1 == 1) {
+        whole + 1
+    } else {
+        whole
+    };
+    u64::try_from(rounded).unwrap_or(u64::MAX)
+}
+
+/// `value` with at most `places` decimals and no trailing zeros, as a
+/// person would write a threshold: 80, 80.5.
+#[must_use]
+pub fn trimmed(value: f64, places: u8) -> String {
+    let text = fixed(value, places);
+    if text.contains('.') {
+        text.trim_end_matches('0').trim_end_matches('.').to_owned()
+    } else {
+        text
+    }
+}
+
 /// Binary units, as memory is sized.
 #[must_use]
 pub fn format_bytes(bytes: u64) -> String {
@@ -277,9 +357,9 @@ pub fn format_bytes(bytes: u64) -> String {
     if unit == 0 {
         format!("{bytes} B")
     } else if value < 10.0 {
-        format!("{value:.1} {name}")
+        format!("{} {name}", fixed(value, 1))
     } else {
-        format!("{value:.0} {name}")
+        format!("{} {name}", fixed(value, 0))
     }
 }
 
@@ -294,15 +374,57 @@ pub fn format_rate(bytes_per_second: f64) -> String {
 #[must_use]
 pub fn format_cores(cores: f64) -> String {
     if cores < 10.0 {
-        format!("{cores:.2} cores")
+        format!("{} cores", fixed(cores, 2))
     } else {
-        format!("{cores:.1} cores")
+        format!("{} cores", fixed(cores, 1))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_decimals_read_as_rust_formats_them() {
+        let mut values = vec![
+            0.0,
+            -0.0,
+            0.5,
+            1.5,
+            2.5,
+            -0.5,
+            0.125,
+            0.375,
+            2.675,
+            1.005,
+            0.04,
+            -0.04,
+            9.995,
+            99.95,
+            1e9,
+            123_456.789,
+            599.96,
+            4_503_599_627_370_497.0,
+            1e17,
+            5e-324,
+            f64::MIN_POSITIVE,
+            f64::NAN,
+            f64::INFINITY,
+            -f64::INFINITY,
+        ];
+        // Chart coordinates, percentages and cores: the figures shown.
+        values.extend((0..6000).map(|i| f64::from(i) * 0.1037));
+        values.extend((0..2000).map(|i| f64::from(i) / 64.0));
+        for v in values {
+            assert_eq!(fixed(v, 0), format!("{v:.0}"), "{v}");
+            assert_eq!(fixed(v, 1), format!("{v:.1}"), "{v}");
+            assert_eq!(fixed(v, 2), format!("{v:.2}"), "{v}");
+        }
+        assert_eq!(trimmed(80.0, 3), "80");
+        assert_eq!(trimmed(80.5, 3), "80.5");
+        assert_eq!(trimmed(80.25, 3), "80.25");
+        assert_eq!(trimmed(0.0, 3), "0");
+    }
 
     #[test]
     fn targets_round_trip_through_their_parameter_form() {

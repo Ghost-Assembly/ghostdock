@@ -43,7 +43,7 @@ fn rule_words(rule: &AlertRule, stacks: &[(String, String)]) -> String {
     format!(
         "{subject} {} above {}% for {} min",
         rule.metric.label(),
-        rule.above_pct,
+        shared::metrics::trimmed(rule.above_pct, 3),
         rule.for_min
     )
 }

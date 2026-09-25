@@ -205,7 +205,7 @@ pub fn format_uptime(share: Option<f64>) -> String {
         // Never rounded up to 100%: one failure in thousands still shows.
         Some(s) => {
             let percent = (s * 10_000.0).floor() / 100.0;
-            format!("{percent:.2}%")
+            format!("{}%", crate::metrics::fixed(percent, 2))
         }
     }
 }
