@@ -1,9 +1,36 @@
 //! What is waiting to be applied.
 
+use std::collections::HashMap;
+
 use chrono::DateTime;
 use shared::update::{ImageStatus, UpdateStatus};
 
 use crate::{Result, Store};
+
+/// Stacks with their last check, if any, filtered by `$filter`: rows for
+/// [`CheckTuple`].
+macro_rules! check_select {
+    ($filter:literal) => {
+        concat!(
+            "SELECT s.id, s.auto_apply, s.last_commit, c.checked_at, c.remote_commit, c.error
+             FROM stacks s LEFT JOIN update_checks c ON c.stack_id = s.id ",
+            $filter
+        )
+    };
+}
+
+/// Image checks, filtered by `$filter`, in the order a status lists them:
+/// rows for [`ImageTuple`].
+macro_rules! image_select {
+    ($filter:literal) => {
+        concat!(
+            "SELECT i.stack_id, i.image, i.running_digest, i.available_digest, i.error
+             FROM image_checks i ",
+            $filter,
+            " ORDER BY i.stack_id, i.image"
+        )
+    };
+}
 
 impl Store {
     /// Turns automatic application on or off for a stack.
@@ -88,47 +115,87 @@ impl Store {
     /// Returns an empty status when the stack has never been checked, which
     /// reads as "nothing known yet" rather than "nothing waiting".
     pub async fn update_status(&self, stack_id: i64) -> Result<UpdateStatus> {
-        let check = sqlx::query_as::<_, (i64, Option<String>, Option<String>)>(
-            "SELECT checked_at, remote_commit, error FROM update_checks WHERE stack_id = ?1",
-        )
-        .bind(stack_id)
-        .fetch_optional(self.pool())
-        .await?;
-
-        let deployed =
-            sqlx::query_as::<_, (Option<String>,)>("SELECT last_commit FROM stacks WHERE id = ?1")
-                .bind(stack_id)
-                .fetch_optional(self.pool())
-                .await?
-                .and_then(|(commit,)| commit);
-
-        let images = sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>)>(
-            "SELECT image, running_digest, available_digest, error
-             FROM image_checks WHERE stack_id = ?1 ORDER BY image",
-        )
-        .bind(stack_id)
-        .fetch_all(self.pool())
-        .await?
-        .into_iter()
-        .map(|(image, running, available, error)| ImageStatus {
-            image,
-            running,
-            available,
-            error,
-        })
-        .collect();
-
-        let (checked_at, remote_commit, error) = match check {
-            Some((at, commit, error)) => (DateTime::from_timestamp(at, 0), commit, error),
-            None => (None, None, None),
-        };
-
-        Ok(UpdateStatus {
-            checked_at,
-            remote_commit,
-            deployed_commit: deployed,
-            images,
-            error,
+        let check = sqlx::query_as::<_, CheckTuple>(check_select!("WHERE s.id = ?1"))
+            .bind(stack_id)
+            .fetch_optional(self.pool())
+            .await?;
+        let images = sqlx::query_as::<_, ImageTuple>(image_select!("WHERE i.stack_id = ?1"))
+            .bind(stack_id)
+            .fetch_all(self.pool())
+            .await?;
+        Ok(match check {
+            Some(check) => to_status(check, images).0,
+            None => UpdateStatus {
+                images: images.into_iter().map(to_image).collect(),
+                ..UpdateStatus::default()
+            },
         })
     }
+
+    /// [`Self::update_status`] for every stack on a host, with whether each
+    /// applies updates by itself, by stack id. Two queries however many
+    /// stacks there are.
+    pub async fn update_statuses(
+        &self,
+        host_id: i64,
+    ) -> Result<HashMap<i64, (UpdateStatus, bool)>> {
+        let checks = sqlx::query_as::<_, CheckTuple>(check_select!("WHERE s.host_id = ?1"))
+            .bind(host_id)
+            .fetch_all(self.pool())
+            .await?;
+        let mut images: HashMap<i64, Vec<ImageTuple>> = HashMap::new();
+        for image in sqlx::query_as::<_, ImageTuple>(image_select!(
+            "JOIN stacks s ON s.id = i.stack_id WHERE s.host_id = ?1"
+        ))
+        .bind(host_id)
+        .fetch_all(self.pool())
+        .await?
+        {
+            images.entry(image.0).or_default().push(image);
+        }
+        Ok(checks
+            .into_iter()
+            .map(|check| {
+                let id = check.0;
+                (id, to_status(check, images.remove(&id).unwrap_or_default()))
+            })
+            .collect())
+    }
+}
+
+/// id, auto_apply, last_commit, checked_at, remote_commit, error
+type CheckTuple = (
+    i64,
+    i64,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+);
+
+/// stack_id, image, running_digest, available_digest, error
+type ImageTuple = (i64, String, Option<String>, Option<String>, Option<String>);
+
+fn to_image((_, image, running, available, error): ImageTuple) -> ImageStatus {
+    ImageStatus {
+        image,
+        running,
+        available,
+        error,
+    }
+}
+
+/// A status and whether its stack applies updates by itself.
+fn to_status(
+    (_, auto_apply, deployed, checked_at, remote_commit, error): CheckTuple,
+    images: Vec<ImageTuple>,
+) -> (UpdateStatus, bool) {
+    let status = UpdateStatus {
+        checked_at: checked_at.and_then(|at| DateTime::from_timestamp(at, 0)),
+        remote_commit,
+        deployed_commit: deployed,
+        images: images.into_iter().map(to_image).collect(),
+        error,
+    };
+    (status, auto_apply != 0)
 }

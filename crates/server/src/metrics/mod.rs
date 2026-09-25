@@ -507,24 +507,26 @@ impl Sampler {
             let Some(store) = self.store.clone() else {
                 continue;
             };
-            let mut batch = Vec::with_capacity(rows.len());
-            for row in rows {
-                match store
-                    .subject(
-                        row.kind,
-                        &row.key,
-                        row.project.as_deref(),
-                        row.service.as_deref(),
-                        minute,
-                    )
-                    .await
-                {
-                    Ok(id) => batch.push((id, row.reading)),
-                    Err(e) => tracing::warn!(error = %e, "could not record a subject"),
+            let names: Vec<_> = rows
+                .iter()
+                .map(|row| store::metrics::SubjectName {
+                    kind: row.kind,
+                    key: &row.key,
+                    project: row.project.as_deref(),
+                    service: row.service.as_deref(),
+                })
+                .collect();
+            match store.subjects(minute, &names).await {
+                Ok(ids) => {
+                    let batch: Vec<_> = ids
+                        .into_iter()
+                        .zip(rows.iter().map(|r| r.reading))
+                        .collect();
+                    if let Err(e) = store.write_minute(&batch).await {
+                        tracing::warn!(error = %e, "could not write a minute of figures");
+                    }
                 }
-            }
-            if let Err(e) = store.write_minute(&batch).await {
-                tracing::warn!(error = %e, "could not write a minute of figures");
+                Err(e) => tracing::warn!(error = %e, "could not record a minute's subjects"),
             }
             if let Some((from, to)) = domain::metrics::quarter_due(minute + 60, rolled_to) {
                 match store.rollup(from, to).await {
@@ -687,15 +689,15 @@ async fn work_out_sizing(
     use shared::metrics::Severity;
     let since = now - store::metrics::MINUTE_DAYS * 86_400;
     let mut out = Vec::new();
+    let ooms = store.count_events("oom", since).await?;
     for s in store.containers_seen_since(since).await? {
         let summary = store.sizing_summary(s.id, since, now + 60).await?;
-        let ooms = store.count_events(s.id, "oom", since).await?;
         out.push(domain::sizing::advise(
             &s.key,
             s.project.as_deref(),
             s.service.as_deref(),
             &summary,
-            ooms,
+            ooms.get(&s.id).copied().unwrap_or(0),
         ));
     }
     out.sort_by_key(|r| {

@@ -1,5 +1,5 @@
 use shared::metrics::{Reading, Resolution, SubjectKind};
-use store::metrics::MetricsStore;
+use store::metrics::{MetricsStore, SubjectName};
 
 fn r(t: i64, cpu: f64, mem: u64) -> Reading {
     Reading {
@@ -71,6 +71,52 @@ async fn history_continues_across_a_recreated_container() {
         .await
         .unwrap();
     assert_eq!(before, after);
+}
+
+#[tokio::test]
+async fn a_minutes_subjects_are_recorded_together_as_one_at_a_time() {
+    let m = MetricsStore::open_in_memory().await.unwrap();
+    let known = m
+        .subject(SubjectKind::Container, "blog-web-1", Some("blog"), None, 0)
+        .await
+        .unwrap();
+
+    let ids = m
+        .subjects(
+            600,
+            &[
+                SubjectName {
+                    kind: SubjectKind::Container,
+                    key: "blog-web-1",
+                    project: None,
+                    service: Some("web"),
+                },
+                SubjectName {
+                    kind: SubjectKind::Host,
+                    key: "host",
+                    project: None,
+                    service: None,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(ids.len(), 2);
+    assert_eq!(ids[0], known, "the same subject, in the order asked");
+    let host = m
+        .subject(SubjectKind::Host, "host", None, None, 600)
+        .await
+        .unwrap();
+    assert_eq!(ids[1], host);
+    let web = m
+        .find(SubjectKind::Container, "blog-web-1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(web.project.as_deref(), Some("blog"), "not forgotten");
+    assert_eq!(web.service.as_deref(), Some("web"));
+    assert_eq!(web.last_seen, 600);
 }
 
 #[tokio::test]
@@ -163,11 +209,29 @@ async fn events_are_counted_per_subject() {
         .subject(SubjectKind::Container, "x", None, None, 0)
         .await
         .unwrap();
+    let other = m
+        .subject(SubjectKind::Container, "y", None, None, 0)
+        .await
+        .unwrap();
+    let quiet = m
+        .subject(SubjectKind::Container, "z", None, None, 0)
+        .await
+        .unwrap();
     m.record_event(id, 100, "oom").await.unwrap();
     m.record_event(id, 200, "oom").await.unwrap();
     m.record_event(id, 300, "restart").await.unwrap();
-    assert_eq!(m.count_events(id, "oom", 150).await.unwrap(), 1);
-    assert_eq!(m.count_events(id, "oom", 0).await.unwrap(), 2);
+    m.record_event(other, 250, "oom").await.unwrap();
+
+    let since_150 = m.count_events("oom", 150).await.unwrap();
+    assert_eq!(since_150.get(&id), Some(&1));
+    assert_eq!(since_150.get(&other), Some(&1));
+    let all = m.count_events("oom", 0).await.unwrap();
+    assert_eq!(all.get(&id), Some(&2));
+    assert_eq!(all.get(&quiet), None, "none is no entry");
+    assert_eq!(
+        m.count_events("restart", 0).await.unwrap().get(&id),
+        Some(&1)
+    );
 }
 
 #[tokio::test]
