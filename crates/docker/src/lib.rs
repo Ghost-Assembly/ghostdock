@@ -196,22 +196,39 @@ impl Client {
             output: mut stream, ..
         } = self.inner.start_exec(&created.id, None).await?
         {
+            let mut assembled = logs::Lines::default();
             let collect = async {
-                while let Some(chunk) = stream.next().await {
-                    for line in logs::to_lines(&chunk?) {
+                let mut keep = |lines: Vec<shared::logs::LogLine>| {
+                    for line in lines {
                         bytes += line.text.len();
                         if bytes > RUN_OUTPUT_LIMIT {
                             truncated = true;
-                            return Ok::<_, Error>(());
+                            return false;
                         }
                         output.push(line);
                     }
+                    true
+                };
+                while let Some(chunk) = stream.next().await {
+                    if !keep(assembled.push(&chunk?)) {
+                        return Ok::<_, Error>(());
+                    }
                 }
+                keep(assembled.finish());
                 Ok(())
             };
             match tokio::time::timeout(wait, collect).await {
                 Ok(done) => done?,
                 Err(_) => {
+                    // What it had printed of its last line still counts.
+                    for line in assembled.finish() {
+                        bytes += line.text.len();
+                        if bytes > RUN_OUTPUT_LIMIT {
+                            truncated = true;
+                            break;
+                        }
+                        output.push(line);
+                    }
                     return Ok(shared::logs::CommandResult {
                         exit_code: None,
                         output,
@@ -406,15 +423,27 @@ impl Client {
             None => options.tail("0"),
         };
 
-        self.inner
-            .logs(id, Some(options.build()))
-            .flat_map(|chunk| {
-                let items: Vec<Result<shared::logs::LogLine>> = match chunk {
-                    Ok(chunk) => logs::to_lines(&chunk).into_iter().map(Ok).collect(),
-                    Err(e) => vec![Err(Error::Api(e))],
+        let chunks = Box::pin(self.inner.logs(id, Some(options.build())));
+        // Lines are assembled across chunks; whatever is held when the
+        // stream ends is let out then.
+        futures::stream::unfold(
+            (chunks, logs::Lines::default(), false),
+            |(mut chunks, mut lines, ended)| async move {
+                if ended {
+                    return None;
+                }
+                let items: Vec<Result<shared::logs::LogLine>> = match chunks.next().await {
+                    Some(Ok(chunk)) => lines.push(&chunk).into_iter().map(Ok).collect(),
+                    Some(Err(e)) => vec![Err(Error::Api(e))],
+                    None => {
+                        let rest = lines.finish().into_iter().map(Ok).collect();
+                        return Some((rest, (chunks, lines, true)));
+                    }
                 };
-                futures::stream::iter(items)
-            })
+                Some((items, (chunks, lines, false)))
+            },
+        )
+        .flat_map(futures::stream::iter)
     }
 
     /// Recent output from a container.
@@ -433,10 +462,12 @@ impl Client {
             .build();
 
         let mut stream = self.inner.logs(id, Some(options));
+        let mut assembled = logs::Lines::default();
         let mut lines = Vec::new();
         while let Some(chunk) = stream.next().await {
-            lines.extend(logs::to_lines(&chunk?));
+            lines.extend(assembled.push(&chunk?));
         }
+        lines.extend(assembled.finish());
 
         Ok(shared::logs::Logs {
             container: id.to_owned(),
