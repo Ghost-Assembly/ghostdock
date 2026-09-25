@@ -1,6 +1,6 @@
 //! User accounts.
 
-use crate::{Error, Result, Store};
+use crate::{Error, Result, Store, unique_or};
 
 /// A user as stored, including the password hash.
 ///
@@ -59,15 +59,7 @@ impl Store {
         .bind(password_hash)
         .fetch_one(self.pool())
         .await
-        .map_err(|e| {
-            // The UNIQUE index is the authority on duplicates, not a prior
-            // SELECT: checking first would race two concurrent bootstraps.
-            if is_unique_violation(&e) {
-                Error::UsernameTaken
-            } else {
-                Error::Sqlx(e)
-            }
-        })?;
+        .map_err(unique_or(Error::UsernameTaken))?;
         Ok(to_row(row))
     }
 
@@ -160,9 +152,4 @@ impl Store {
         .ok_or(Error::NotFound)?;
         Ok(epoch.0)
     }
-}
-
-fn is_unique_violation(e: &sqlx::Error) -> bool {
-    e.as_database_error()
-        .is_some_and(sqlx::error::DatabaseError::is_unique_violation)
 }

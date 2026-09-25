@@ -3,15 +3,10 @@
 //! Every secret written here is sealed and bound to a purpose, and no query
 //! in this module returns one to a caller that only wants to display it.
 
-use chrono::{DateTime, Utc};
 use shared::source::{Credential, Repo};
 
 use crate::secrets::purpose;
-use crate::{Error, Result, Store};
-
-fn timestamp(secs: i64) -> DateTime<Utc> {
-    DateTime::from_timestamp(secs, 0).unwrap_or_default()
-}
+use crate::{Error, Result, Store, timestamp, unique_or};
 
 impl Store {
     // ---- credentials --------------------------------------------------
@@ -35,15 +30,7 @@ impl Store {
         .bind(&sealed)
         .fetch_one(self.pool())
         .await
-        .map_err(|e| {
-            if e.as_database_error()
-                .is_some_and(sqlx::error::DatabaseError::is_unique_violation)
-            {
-                Error::SlugTaken
-            } else {
-                Error::Sqlx(e)
-            }
-        })?;
+        .map_err(unique_or(Error::SlugTaken))?;
 
         Ok(Credential {
             id,
@@ -113,15 +100,7 @@ impl Store {
         .bind(credential_id)
         .fetch_one(self.pool())
         .await
-        .map_err(|e| {
-            if e.as_database_error()
-                .is_some_and(sqlx::error::DatabaseError::is_unique_violation)
-            {
-                Error::SlugTaken
-            } else {
-                Error::Sqlx(e)
-            }
-        })?;
+        .map_err(unique_or(Error::SlugTaken))?;
 
         self.repo_by_id(id).await?.ok_or(Error::NotFound)
     }

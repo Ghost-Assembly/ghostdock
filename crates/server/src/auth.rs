@@ -96,53 +96,17 @@ impl Principal {
             let secret = header
                 .to_str()
                 .ok()
-                .and_then(|v| {
-                    v.strip_prefix("Bearer ")
-                        .or_else(|| v.strip_prefix("bearer "))
-                })
-                .map(str::trim)
+                .and_then(bearer)
                 .ok_or(ApiError::NotAuthenticated)?;
-            let (token, user) = state
-                .store
-                .token_authenticate(secret)
-                .await?
-                .ok_or(ApiError::NotAuthenticated)?;
-            return Ok(Self {
-                user: user.to_public(),
-                via: Via::Token {
-                    id: token.id,
-                    name: token.name,
-                    permissions: token.permissions,
-                    expires_at: token.expires_at,
-                },
-            });
+            return Self::from_token(state, secret).await;
         }
 
         let session = Session::from_request_parts(parts, state)
             .await
             .map_err(|_| ApiError::NotAuthenticated)?;
-
-        let user_id: i64 = session
-            .get(SESSION_USER_ID)
+        let row = session_user(&session, state)
             .await?
             .ok_or(ApiError::NotAuthenticated)?;
-
-        // Re-read the account on every request rather than trusting the
-        // session payload, so deleting a user immediately invalidates their
-        // sessions instead of leaving them valid until expiry.
-        let row = state
-            .store
-            .user_by_id(user_id)
-            .await?
-            .ok_or(ApiError::NotAuthenticated)?;
-
-        // A password change moves the epoch on, voiding every session begun
-        // under the old password.
-        let epoch: i64 = session.get(SESSION_EPOCH).await?.unwrap_or(0);
-        if epoch != row.session_epoch {
-            return Err(ApiError::NotAuthenticated);
-        }
-
         Ok(Self {
             user: row.to_public(),
             via: Via::Session {
@@ -150,6 +114,53 @@ impl Principal {
             },
         })
     }
+
+    /// The holder of an API token's secret, if it is a live token.
+    pub(crate) async fn from_token(state: &AppState, secret: &str) -> Result<Self, ApiError> {
+        let (token, user) = state
+            .store
+            .token_authenticate(secret)
+            .await?
+            .ok_or(ApiError::NotAuthenticated)?;
+        Ok(Self {
+            user: user.to_public(),
+            via: Via::Token {
+                id: token.id,
+                name: token.name,
+                permissions: token.permissions,
+                expires_at: token.expires_at,
+            },
+        })
+    }
+}
+
+/// The secret in an `Authorization` header's value, if it is a bearer one.
+pub(crate) fn bearer(value: &str) -> Option<&str> {
+    value
+        .strip_prefix("Bearer ")
+        .or_else(|| value.strip_prefix("bearer "))
+        .map(str::trim)
+}
+
+/// The account a session is signed in as, while that sign-in still holds.
+async fn session_user(
+    session: &Session,
+    state: &AppState,
+) -> Result<Option<store::users::UserRow>, ApiError> {
+    let Some(user_id) = session.get::<i64>(SESSION_USER_ID).await? else {
+        return Ok(None);
+    };
+    // Re-read the account on every request rather than trusting the
+    // session payload, so deleting a user immediately invalidates their
+    // sessions instead of leaving them valid until expiry. A password
+    // change moves the epoch on, voiding every session begun under the old
+    // password.
+    let epoch: i64 = session.get(SESSION_EPOCH).await?.unwrap_or(0);
+    Ok(state
+        .store
+        .user_by_id(user_id)
+        .await?
+        .filter(|row| row.session_epoch == epoch))
 }
 
 impl FromRequestParts<AppState> for Principal {
@@ -259,18 +270,9 @@ async fn status(
 ) -> Result<Json<AuthStatus>, ApiError> {
     let bootstrapped = state.store.user_count().await? > 0;
 
-    let user = match session.get::<i64>(SESSION_USER_ID).await? {
-        Some(id) => {
-            let epoch: i64 = session.get(SESSION_EPOCH).await?.unwrap_or(0);
-            state
-                .store
-                .user_by_id(id)
-                .await?
-                .filter(|u| u.session_epoch == epoch)
-                .map(|u| u.to_public())
-        }
-        None => None,
-    };
+    let user = session_user(&session, &state)
+        .await?
+        .map(|row| row.to_public());
 
     Ok(Json(AuthStatus { bootstrapped, user }))
 }

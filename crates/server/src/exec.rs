@@ -38,9 +38,6 @@ pub fn routes() -> Router<AppState> {
         )
 }
 
-/// How often an open shell is pinged, as the event socket is.
-const PING: std::time::Duration = std::time::Duration::from_secs(20);
-
 const RUN_DEFAULT_SECS: u32 = 30;
 const RUN_MAX_SECS: u32 = 300;
 /// How much of a command the audit trail keeps.
@@ -62,12 +59,7 @@ async fn run(
     if command.is_empty() {
         return Err(ApiError::BadRequest("Give a command to run.".to_owned()));
     }
-    state
-        .store
-        .host_by_id(host_id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
-    let client = state.docker.clone().ok_or(ApiError::DaemonUnavailable)?;
+    let client = crate::hosts::daemon(&state, host_id).await?;
     let wait = request
         .timeout_seconds
         .unwrap_or(RUN_DEFAULT_SECS)
@@ -108,12 +100,7 @@ async fn open(
     Path((host_id, id)): Path<(i64, String)>,
     upgrade: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
-    state
-        .store
-        .host_by_id(host_id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
-    let client = state.docker.clone().ok_or(ApiError::DaemonUnavailable)?;
+    let client = crate::hosts::daemon(&state, host_id).await?.clone();
 
     // The most powerful thing anyone can do here, so it is recorded before
     // the socket is handed over rather than after it closes.
@@ -145,7 +132,10 @@ async fn session(
 
     // Container output to the browser, and a ping when there is none: a
     // proxy drops a connection that stays quiet, and a shell often does.
+    // Not `socket::pump`: input goes to the shell while output is sent, and
+    // a revoked shell says why before it closes.
     let mut to_browser = tokio::spawn(async move {
+        use crate::socket::PING;
         let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + PING, PING);
         loop {
             tokio::select! {

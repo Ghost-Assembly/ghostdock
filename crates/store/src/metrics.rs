@@ -19,6 +19,37 @@ pub struct MetricsStore {
     pool: SqlitePool,
 }
 
+/// What sampling knows a subject by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubjectName<'a> {
+    pub kind: SubjectKind,
+    pub key: &'a str,
+    /// Kept when not given: a later reading without it does not erase it.
+    pub project: Option<&'a str>,
+    pub service: Option<&'a str>,
+}
+
+/// Records `name` as seen at `now` and returns its id.
+fn upsert_subject<'q>(
+    name: &SubjectName<'q>,
+    now: i64,
+) -> sqlx::query::QueryAs<'q, sqlx::Sqlite, (i64,), sqlx::sqlite::SqliteArguments> {
+    sqlx::query_as::<_, (i64,)>(
+        "INSERT INTO subjects (kind, key, project, service, first_seen, last_seen)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+         ON CONFLICT (kind, key) DO UPDATE SET
+             project = COALESCE(excluded.project, subjects.project),
+             service = COALESCE(excluded.service, subjects.service),
+             last_seen = MAX(subjects.last_seen, excluded.last_seen)
+         RETURNING id",
+    )
+    .bind(name.kind.as_str())
+    .bind(name.key)
+    .bind(name.project)
+    .bind(name.service)
+    .bind(now)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubjectRow {
     pub id: i64,
@@ -193,6 +224,7 @@ impl MetricsStore {
         Ok(Self { pool })
     }
 
+    /// The id of a subject, recording it as seen at `now`.
     pub async fn subject(
         &self,
         kind: SubjectKind,
@@ -201,23 +233,25 @@ impl MetricsStore {
         service: Option<&str>,
         now: i64,
     ) -> Result<i64> {
-        let (id,) = sqlx::query_as::<_, (i64,)>(
-            "INSERT INTO subjects (kind, key, project, service, first_seen, last_seen)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
-             ON CONFLICT (kind, key) DO UPDATE SET
-                 project = COALESCE(excluded.project, subjects.project),
-                 service = COALESCE(excluded.service, subjects.service),
-                 last_seen = MAX(subjects.last_seen, excluded.last_seen)
-             RETURNING id",
-        )
-        .bind(kind.as_str())
-        .bind(key)
-        .bind(project)
-        .bind(service)
-        .bind(now)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(id)
+        let name = SubjectName {
+            kind,
+            key,
+            project,
+            service,
+        };
+        Ok(upsert_subject(&name, now).fetch_one(&self.pool).await?.0)
+    }
+
+    /// [`Self::subject`] for each of `names`, in one transaction: a minute's
+    /// worth at once. Ids come back in the order asked.
+    pub async fn subjects(&self, now: i64, names: &[SubjectName<'_>]) -> Result<Vec<i64>> {
+        let mut tx = self.pool.begin().await?;
+        let mut ids = Vec::with_capacity(names.len());
+        for name in names {
+            ids.push(upsert_subject(name, now).fetch_one(&mut *tx).await?.0);
+        }
+        tx.commit().await?;
+        Ok(ids)
     }
 
     pub async fn find(&self, kind: SubjectKind, key: &str) -> Result<Option<SubjectRow>> {
@@ -302,40 +336,6 @@ impl MetricsStore {
         Ok(rows.into_iter().map(from_row).collect())
     }
 
-    pub async fn read_stack(
-        &self,
-        project: &str,
-        resolution: Resolution,
-        from: i64,
-        to: i64,
-    ) -> Result<Vec<Reading>> {
-        let sql = match resolution {
-            Resolution::Quarter => {
-                "SELECT s.t, SUM(s.cpu), SUM(s.cpu_max), SUM(s.mem), SUM(s.mem_max),
-                    CASE WHEN COUNT(s.mem_limit) = COUNT(*) THEN SUM(s.mem_limit) END,
-                    SUM(s.net_rx), SUM(s.net_tx), SUM(s.io_read), SUM(s.io_write), NULL, NULL
-                 FROM samples_15m s JOIN subjects j ON j.id = s.subject_id
-                 WHERE j.kind = 'container' AND j.project = ?1 AND s.t >= ?2 AND s.t < ?3
-                 GROUP BY s.t ORDER BY s.t"
-            }
-            _ => {
-                "SELECT s.t, SUM(s.cpu), SUM(s.cpu_max), SUM(s.mem), SUM(s.mem_max),
-                    CASE WHEN COUNT(s.mem_limit) = COUNT(*) THEN SUM(s.mem_limit) END,
-                    SUM(s.net_rx), SUM(s.net_tx), SUM(s.io_read), SUM(s.io_write), NULL, NULL
-                 FROM samples_1m s JOIN subjects j ON j.id = s.subject_id
-                 WHERE j.kind = 'container' AND j.project = ?1 AND s.t >= ?2 AND s.t < ?3
-                 GROUP BY s.t ORDER BY s.t"
-            }
-        };
-        let rows = sqlx::query_as::<_, Row>(sql)
-            .bind(project)
-            .bind(from)
-            .bind(to)
-            .fetch_all(&self.pool)
-            .await?;
-        Ok(rows.into_iter().map(from_row).collect())
-    }
-
     /// A chart's worth of `[from, to)`: at most `points` buckets of time,
     /// each the average of its rows' averages and the maximum of their
     /// peaks, so a spike inside a bucket survives. SQLite does the folding;
@@ -391,10 +391,32 @@ impl MetricsStore {
     /// definitions as `domain::sizing::summarise`, without decoding a month
     /// of rows.
     pub async fn sizing_summary(&self, subject_id: i64, from: i64, to: i64) -> Result<Summary> {
-        let (running, mem_peak, cpu_burst, throttled, n_cpu, n_mem) =
-            sqlx::query_as::<_, (i64, Option<i64>, Option<f64>, Option<f64>, i64, i64)>(
+        // The limit is the one in force at the last running minute; failing
+        // that, at the last minute at all. Each walks the key backwards and
+        // stops at once.
+        let (running, mem_peak, cpu_burst, throttled, n_cpu, n_mem, running_limit, last_limit) =
+            sqlx::query_as::<
+                _,
+                (
+                    i64,
+                    Option<i64>,
+                    Option<f64>,
+                    Option<f64>,
+                    i64,
+                    i64,
+                    Option<i64>,
+                    Option<i64>,
+                ),
+            >(
                 "SELECT COUNT(*), MAX(COALESCE(mem_max, mem)), MAX(COALESCE(cpu_max, cpu)),
-                        AVG(throttled), COUNT(cpu), COUNT(mem)
+                        AVG(throttled), COUNT(cpu), COUNT(mem),
+                        (SELECT mem_limit FROM samples_1m
+                         WHERE subject_id = ?1 AND t >= ?2 AND t < ?3
+                           AND (cpu IS NOT NULL OR mem IS NOT NULL)
+                         ORDER BY t DESC LIMIT 1),
+                        (SELECT mem_limit FROM samples_1m
+                         WHERE subject_id = ?1 AND t >= ?2 AND t < ?3
+                         ORDER BY t DESC LIMIT 1)
                  FROM samples_1m
                  WHERE subject_id = ?1 AND t >= ?2 AND t < ?3
                    AND (cpu IS NOT NULL OR mem IS NOT NULL)",
@@ -404,29 +426,11 @@ impl MetricsStore {
             .bind(to)
             .fetch_one(&self.pool)
             .await?;
-
-        // The limit in force at the last running minute; failing that, the
-        // last minute at all. Both walk the key backwards and stop at once.
         let limit = if running > 0 {
-            sqlx::query_as::<_, (Option<i64>,)>(
-                "SELECT mem_limit FROM samples_1m
-                 WHERE subject_id = ?1 AND t >= ?2 AND t < ?3
-                   AND (cpu IS NOT NULL OR mem IS NOT NULL)
-                 ORDER BY t DESC LIMIT 1",
-            )
+            running_limit
         } else {
-            sqlx::query_as::<_, (Option<i64>,)>(
-                "SELECT mem_limit FROM samples_1m
-                 WHERE subject_id = ?1 AND t >= ?2 AND t < ?3
-                 ORDER BY t DESC LIMIT 1",
-            )
-        }
-        .bind(subject_id)
-        .bind(from)
-        .bind(to)
-        .fetch_optional(&self.pool)
-        .await?
-        .and_then(|(l,)| l);
+            last_limit
+        };
 
         let count = |n: i64| u64::try_from(n).unwrap_or(0);
         let (p50, p95) = (rank(count(n_cpu), 0.5), rank(count(n_cpu), 0.95));
@@ -541,16 +545,21 @@ impl MetricsStore {
         Ok(())
     }
 
-    pub async fn count_events(&self, subject_id: i64, kind: &str, since: i64) -> Result<u32> {
-        let (n,) = sqlx::query_as::<_, (i64,)>(
-            "SELECT COUNT(*) FROM events WHERE subject_id = ?1 AND kind = ?2 AND t >= ?3",
+    /// How many events of `kind` each subject has had since `since`, by
+    /// subject id; a subject with none has no entry.
+    pub async fn count_events(&self, kind: &str, since: i64) -> Result<HashMap<i64, u32>> {
+        let rows = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT subject_id, COUNT(*) FROM events WHERE kind = ?1 AND t >= ?2
+             GROUP BY subject_id",
         )
-        .bind(subject_id)
         .bind(kind)
         .bind(since)
-        .fetch_one(&self.pool)
+        .fetch_all(&self.pool)
         .await?;
-        Ok(u32::try_from(n).unwrap_or(u32::MAX))
+        Ok(rows
+            .into_iter()
+            .map(|(id, n)| (id, u32::try_from(n).unwrap_or(u32::MAX)))
+            .collect())
     }
 
     pub async fn prune(&self, now: i64) -> Result<()> {
@@ -604,4 +613,42 @@ fn subject_row(
         service,
         last_seen,
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// How SQLite would run `sql`, its plan's lines joined.
+    async fn plan(m: &MetricsStore, sql: &str) -> String {
+        // A test's own literal tables, not input.
+        let explain = sqlx::AssertSqlSafe(format!("EXPLAIN QUERY PLAN {sql}"));
+        sqlx::query_as::<_, (i64, i64, i64, String)>(explain)
+            .bind(0_i64)
+            .bind(0_i64)
+            .fetch_all(&m.pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(.., detail)| detail)
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
+    #[tokio::test]
+    async fn rollup_and_pruning_find_rows_by_time_without_a_full_scan() {
+        // Both filter on `t` alone, which the (subject_id, t) key cannot
+        // serve: without an index of their own they read every row kept.
+        let m = MetricsStore::open_in_memory().await.unwrap();
+        for table in ["samples_1m", "samples_15m"] {
+            for sql in [
+                format!("SELECT subject_id FROM {table} WHERE t >= ?1 AND t < ?2"),
+                format!("DELETE FROM {table} WHERE t < ?1 AND ?2 = ?2"),
+            ] {
+                let plan = plan(&m, &sql).await;
+                assert!(plan.contains(&format!("idx_{table}_t")), "{sql}: {plan}");
+            }
+        }
+    }
 }

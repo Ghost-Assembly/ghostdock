@@ -494,11 +494,25 @@ pub(super) fn find(name: &str, permissions: &[Permission]) -> Option<&'static To
 pub(super) struct Api {
     router: Router,
     bearer: String,
+    wake: Wake,
+}
+
+/// What wakes a wait for an operation's outcome, in place of asking over
+/// and over. It tells a tool only when to look again: what it reports is
+/// always read through the API with the caller's token.
+pub(super) struct Wake {
+    pub runner: crate::runner::Runner,
+    pub revocations: crate::revocation::Revocations,
+    pub principal: crate::auth::Principal,
 }
 
 impl Api {
-    pub(super) fn new(router: Router, bearer: String) -> Self {
-        Self { router, bearer }
+    pub(super) fn new(router: Router, bearer: String, wake: Wake) -> Self {
+        Self {
+            router,
+            bearer,
+            wake,
+        }
     }
 
     async fn request(
@@ -970,8 +984,15 @@ async fn get_stack(api: &Api, args: &Value) -> Result<Value, String> {
 }
 
 /// Starts an operation and, unless told not to, follows it to the end.
+///
+/// Between reads of the deployment, which go through the API, it sleeps
+/// until the operation is announced finished, the token is revoked, or
+/// [`RECHECK`] passes, whichever is first.
 async fn operate(api: &Api, args: &Value, action: &str) -> Result<Value, String> {
     let s = stack(api, args).await?;
+    // Before starting, so an operation that ends at once is not missed.
+    let mut finished = api.wake.runner.subscribe();
+    let revoked = api.wake.revocations.until_revoked(&api.wake.principal);
     let started = api
         .request("POST", &format!("/stacks/{}/{action}", s.id), None)
         .await?;
@@ -992,7 +1013,10 @@ async fn operate(api: &Api, args: &Value, action: &str) -> Result<Value, String>
         WAIT_MAX_SECS,
     ));
     let deadline = tokio::time::Instant::now() + limit;
+    tokio::pin!(revoked);
+    let mut watching_revocation = true;
     loop {
+        // A revoked token fails here, as it would anywhere in the API.
         let detail = match api.get(&format!("/deployments/{id}")).await {
             Ok(detail) => detail,
             Err(e) => {
@@ -1006,12 +1030,45 @@ async fn operate(api: &Api, args: &Value, action: &str) -> Result<Value, String>
         if detail["status"] != json!("running") {
             return Ok(outcome(&detail, OUTPUT_TAIL_LINES));
         }
-        if tokio::time::Instant::now() >= deadline {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
             let mut still = outcome(&detail, OUTPUT_TAIL_LINES);
             still["note"] = json!("still running when the wait ran out; get_deployment follows it");
             return Ok(still);
         }
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::select! {
+            () = announced(&mut finished, id) => {}
+            // Read again at once, and let the API refuse. Falling behind
+            // the announcements also ends this, as a missed revocation
+            // might have been among them; if the token still works, the
+            // wait goes on, read every RECHECK.
+            () = &mut revoked, if watching_revocation => watching_revocation = false,
+            () = tokio::time::sleep_until(deadline.min(now + RECHECK)) => {}
+        }
+    }
+}
+
+/// Longest sleep between reads of a running operation. Its end is
+/// announced, so this only bounds the wait should that announcement never
+/// come.
+const RECHECK: Duration = Duration::from_secs(30);
+
+/// Returns once deployment `id` is announced finished, or once events were
+/// missed, which may have included that.
+async fn announced(
+    events: &mut tokio::sync::broadcast::Receiver<shared::event::ServerEvent>,
+    id: i64,
+) {
+    use shared::event::ServerEvent;
+    use tokio::sync::broadcast::error::RecvError;
+    loop {
+        match events.recv().await {
+            Ok(ServerEvent::DeploymentFinished { deployment }) if deployment.id == id => return,
+            Ok(_) => {}
+            Err(RecvError::Lagged(_)) => return,
+            // Nothing more will be announced; the recheck carries on.
+            Err(RecvError::Closed) => std::future::pending().await,
+        }
     }
 }
 

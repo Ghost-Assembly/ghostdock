@@ -50,6 +50,41 @@ fn a_tick_turns_readings_into_a_snapshot_with_stack_totals() {
 }
 
 #[test]
+fn each_stack_sums_only_its_own_containers() {
+    let s = Sampler::new(None, HostPaths::default());
+    for (key, project, v) in [
+        ("blog-web-1", "blog", 0.5),
+        ("blog-db-1", "blog", 1.5),
+        ("shop-web-1", "shop", 4.0),
+        ("loose", "", 9.0),
+    ] {
+        let project = (!project.is_empty()).then_some(project);
+        s.observe(SubjectKind::Container, key, project, None, &cpu(v));
+    }
+    let now = s.tick(3_600);
+
+    let stacks: Vec<_> = now.stacks.iter().map(|s| s.project.as_str()).collect();
+    assert_eq!(stacks, ["blog", "shop"]);
+    for (project, total) in [("blog", 2.0), ("shop", 4.0)] {
+        let stack = now.stacks.iter().find(|s| s.project == project).unwrap();
+        assert!(
+            (stack.reading.cpu.unwrap() - total).abs() < 1e-9,
+            "{project}"
+        );
+        let hour = &stack.cpu_hour;
+        assert_eq!(hour.len(), 60);
+        assert!(
+            (hour[59].unwrap() - total).abs() < 1e-9,
+            "{project}: {hour:?}"
+        );
+        assert!(
+            hour[..59].iter().all(Option::is_none),
+            "{project}: {hour:?}"
+        );
+    }
+}
+
+#[test]
 fn a_container_that_stops_reporting_leaves_the_snapshot() {
     let s = Sampler::new(None, HostPaths::default());
     s.observe(

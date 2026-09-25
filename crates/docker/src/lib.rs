@@ -310,8 +310,8 @@ impl Client {
     }
 
     /// What a cleanup would remove, without removing anything.
-    /// What could be removed. `registered` names the compose projects GhostDock
-    /// manages, whose stopped containers are never offered.
+    /// `registered` names the compose projects GhostDock manages, whose
+    /// stopped containers are never offered.
     pub async fn cleanup_preview(
         &self,
         registered: &std::collections::HashSet<String>,

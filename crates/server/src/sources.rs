@@ -219,11 +219,7 @@ async fn create_git_stack(
     Path(host_id): Path<i64>,
     Json(new): Json<NewGitStack>,
 ) -> Result<Json<RegisteredStack>, ApiError> {
-    state
-        .store
-        .host_by_id(host_id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
+    crate::hosts::known(&state, host_id).await?;
 
     let name = new.name.trim();
     if name.is_empty() {

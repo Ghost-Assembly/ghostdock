@@ -412,7 +412,7 @@ impl Runner {
             });
         };
 
-        let credential = self.credential_for(git.repo_id).await?;
+        let credential = credential_for(&self.store, git.repo_id).await?;
         let repo_dir = self.compose.project_dir(&stack.slug).join("repo");
         let commit = self
             .git
@@ -460,7 +460,7 @@ impl Runner {
         pattern: &domain::glob::Pattern,
     ) -> Result<(String, Vec<String>), RunError> {
         let _one_at_a_time = self.discovering.lock().await;
-        let credential = self.credential_for(repo_id).await?;
+        let credential = credential_for(&self.store, repo_id).await?;
         let dir = self
             .compose
             .project_dir(DISCOVERY_DIR)
@@ -478,21 +478,6 @@ impl Runner {
             .collect();
         files.sort();
         Ok((commit, files))
-    }
-
-    /// The credential for a repository, if one is configured.
-    async fn credential_for(&self, repo_id: i64) -> Result<Option<Credential>, RunError> {
-        let Some(repo) = self.store.repo_by_id(repo_id).await? else {
-            return Ok(None);
-        };
-        let Some(credential_id) = repo.credential_id else {
-            return Ok(None);
-        };
-        Ok(self
-            .store
-            .credential_secret(credential_id)
-            .await?
-            .map(|(username, secret)| Credential { username, secret }))
     }
 
     /// Runs one invocation, optionally forwarding its output to subscribers.
@@ -585,6 +570,24 @@ impl Runner {
             Err(e) => tracing::error!(error = %e, "could not read back deployment"),
         }
     }
+}
+
+/// The credential for a repository, if one is configured.
+pub(crate) async fn credential_for(
+    store: &Store,
+    repo_id: i64,
+) -> Result<Option<Credential>, store::Error> {
+    let Some(credential_id) = store
+        .repo_by_id(repo_id)
+        .await?
+        .and_then(|repo| repo.credential_id)
+    else {
+        return Ok(None);
+    };
+    Ok(store
+        .credential_secret(credential_id)
+        .await?
+        .map(|(username, secret)| Credential { username, secret }))
 }
 
 #[cfg(test)]

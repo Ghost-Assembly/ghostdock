@@ -27,18 +27,21 @@ async fn list(
     Path(host_id): Path<i64>,
 ) -> Result<Json<Vec<StackUpdate>>, ApiError> {
     let stacks = state.store.stacks_list(host_id).await?;
+    let mut statuses = state.store.update_statuses(host_id).await?;
 
-    let mut out = Vec::with_capacity(stacks.len());
-    for stack in stacks {
-        let status = state.store.update_status(stack.id).await?;
-        out.push(StackUpdate {
-            reason: domain::update::reason(&status),
-            auto_apply: state.store.stack_auto_apply(stack.id).await?,
-            busy: state.runner.is_busy(stack.id),
-            status,
-            stack,
-        });
-    }
+    let out = stacks
+        .into_iter()
+        .map(|stack| {
+            let (status, auto_apply) = statuses.remove(&stack.id).unwrap_or_default();
+            StackUpdate {
+                reason: domain::update::reason(&status),
+                auto_apply,
+                busy: state.runner.is_busy(stack.id),
+                status,
+                stack,
+            }
+        })
+        .collect();
     Ok(Json(out))
 }
 

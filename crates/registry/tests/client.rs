@@ -183,6 +183,61 @@ async fn requests_to_one_registry_are_spaced_out() {
 }
 
 #[tokio::test]
+async fn requests_to_one_registry_made_together_are_still_spaced_out() {
+    let fake = Fake::default();
+    let base = serve(fake.clone()).await;
+    let reference = parse("example.test/team/app:1.0").unwrap();
+    let client = Client::new()
+        .with_base_override(base)
+        .with_min_interval(Duration::from_millis(80));
+
+    let started = std::time::Instant::now();
+    let (a, b, c) = tokio::join!(
+        client.digest(&reference),
+        client.digest(&reference),
+        client.digest(&reference)
+    );
+    a.unwrap();
+    b.unwrap();
+    c.unwrap();
+
+    assert!(
+        started.elapsed() >= Duration::from_millis(160),
+        "took {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn waiting_on_one_registry_does_not_hold_up_another() {
+    // One sweep asks many registries. A pause owed to one must not be paid
+    // by all of them.
+    let base = serve(Fake::default()).await;
+    let slow = parse("slow.test/team/app:1.0").unwrap();
+    let other = parse("other.test/team/app:1.0").unwrap();
+    let client = Client::new()
+        .with_base_override(base)
+        .with_min_interval(Duration::from_secs(2));
+    client.digest(&slow).await.unwrap();
+
+    // The second request to `slow` now waits two seconds.
+    let waiting = tokio::spawn({
+        let client = client.clone();
+        async move { client.digest(&slow).await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let started = std::time::Instant::now();
+    client.digest(&other).await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "another registry waited {:?}",
+        started.elapsed()
+    );
+    waiting.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn an_unreachable_registry_names_itself() {
     let reference = parse("example.test/team/app:1.0").unwrap();
     let client = Client::new()

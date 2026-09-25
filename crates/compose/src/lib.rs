@@ -14,7 +14,7 @@ pub mod slug;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -59,16 +59,6 @@ pub struct Outcome {
     pub timed_out: bool,
     /// Merged stdout and stderr, in the order it was produced.
     pub output: String,
-    pub duration: Duration,
-}
-
-impl Outcome {
-    /// The last few lines, for a summary where the whole log is too much.
-    #[must_use]
-    pub fn tail(&self, lines: usize) -> String {
-        let all: Vec<&str> = self.output.lines().collect();
-        all[all.len().saturating_sub(lines)..].join("\n")
-    }
 }
 
 /// Runs `docker compose` against materialised project directories.
@@ -106,15 +96,7 @@ impl Compose {
         compose_yaml: &str,
         vars: &[(String, String)],
     ) -> Result<PathBuf> {
-        slug::validate(stack)?;
-        let dir = self.project_dir(stack);
-
-        tokio::fs::create_dir_all(&dir)
-            .await
-            .map_err(|source| Error::Io {
-                context: format!("creating {}", dir.display()),
-                source,
-            })?;
+        let dir = self.create_project_dir(stack).await?;
 
         let compose_path = dir.join(COMPOSE_FILE);
         tokio::fs::write(&compose_path, compose_yaml)
@@ -124,16 +106,7 @@ impl Compose {
                 source,
             })?;
 
-        let env_path = dir.join(ENV_FILE);
-        if vars.is_empty() {
-            // Remove a stale file, or compose keeps applying variables that
-            // were deleted from the stack.
-            let _ = tokio::fs::remove_file(&env_path).await;
-        } else {
-            let rendered = env::render(vars)?;
-            write_private(&env_path, &rendered).await?;
-        }
-
+        write_env(&dir, vars).await?;
         Ok(dir)
     }
 
@@ -147,6 +120,15 @@ impl Compose {
         stack: &str,
         vars: &[(String, String)],
     ) -> Result<Option<PathBuf>> {
+        let dir = self.create_project_dir(stack).await?;
+        write_env(&dir, vars).await
+    }
+
+    /// The stack's directory, created if need be.
+    ///
+    /// The slug is validated first: it becomes a directory name, so an
+    /// unchecked one is a path-traversal primitive.
+    async fn create_project_dir(&self, stack: &str) -> Result<PathBuf> {
         slug::validate(stack)?;
         let dir = self.project_dir(stack);
         tokio::fs::create_dir_all(&dir)
@@ -155,15 +137,7 @@ impl Compose {
                 context: format!("creating {}", dir.display()),
                 source,
             })?;
-
-        let path = dir.join(ENV_FILE);
-        if vars.is_empty() {
-            let _ = tokio::fs::remove_file(&path).await;
-            return Ok(None);
-        }
-
-        write_private(&path, &env::render(vars)?).await?;
-        Ok(Some(path))
+        Ok(dir)
     }
 
     /// Removes a stack's `.env`, leaving everything else in its directory.
@@ -192,8 +166,6 @@ impl Compose {
         timeout: Duration,
         sink: Option<mpsc::UnboundedSender<String>>,
     ) -> Result<Outcome> {
-        let started = Instant::now();
-
         let mut child = Command::new(&self.bin)
             .args(argv)
             .stdin(Stdio::null())
@@ -265,7 +237,6 @@ impl Compose {
             exit_code: status.and_then(|s| s.code()),
             timed_out,
             output,
-            duration: started.elapsed(),
         })
     }
 }
@@ -309,6 +280,19 @@ where
             }
         }
     });
+}
+
+/// Writes `vars` as the `.env` in `dir` and returns its path, or with none,
+/// removes a stale one: compose would otherwise keep applying variables
+/// deleted from the stack.
+async fn write_env(dir: &Path, vars: &[(String, String)]) -> Result<Option<PathBuf>> {
+    let path = dir.join(ENV_FILE);
+    if vars.is_empty() {
+        let _ = tokio::fs::remove_file(&path).await;
+        return Ok(None);
+    }
+    write_private(&path, &env::render(vars)?).await?;
+    Ok(Some(path))
 }
 
 /// Writes a file only the owner can read.

@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use gitsync::Git;
-use gitsync::command::Credential;
+use shared::container::Container;
 use shared::deployment::{Action, RegisteredStack, Trigger};
 use shared::update::{ImageStatus, UpdateStatus};
 use store::Store;
@@ -78,8 +78,11 @@ impl Checker {
             }
         };
 
+        // Once for the whole pass rather than once a stack: the daemon's
+        // list is the same for all of them.
+        let containers = self.containers().await;
         for stack in stacks {
-            let status = self.check(&stack).await;
+            let status = self.check_with(&stack, containers.as_deref()).await;
             if status.has_update() {
                 self.maybe_apply(&stack).await;
             }
@@ -88,8 +91,23 @@ impl Checker {
 
     /// Checks one stack and records the result.
     pub async fn check(&self, stack: &RegisteredStack) -> UpdateStatus {
+        let containers = self.containers().await;
+        self.check_with(stack, containers.as_deref()).await
+    }
+
+    /// Every container on the host, or `None` without a daemon to ask.
+    async fn containers(&self) -> Option<Vec<Container>> {
+        self.docker.as_ref()?.list_containers().await.ok()
+    }
+
+    /// [`Self::check`], given the host's containers.
+    async fn check_with(
+        &self,
+        stack: &RegisteredStack,
+        containers: Option<&[Container]>,
+    ) -> UpdateStatus {
         let (remote_commit, git_error) = self.check_git(stack).await;
-        let images = self.check_images(stack).await;
+        let images = self.check_images(stack, containers).await;
 
         if let Err(e) = self
             .store
@@ -116,7 +134,10 @@ impl Checker {
             return (None, None);
         };
 
-        let credential = self.credential_for(git.repo_id).await;
+        let credential = crate::runner::credential_for(&self.store, git.repo_id)
+            .await
+            .ok()
+            .flatten();
         match self
             .git
             .remote_head(&git.repo_url, &git.git_ref, credential.as_ref())
@@ -129,22 +150,13 @@ impl Checker {
         }
     }
 
-    async fn credential_for(&self, repo_id: i64) -> Option<Credential> {
-        let repo = self.store.repo_by_id(repo_id).await.ok()??;
-        let credential_id = repo.credential_id?;
-        self.store
-            .credential_secret(credential_id)
-            .await
-            .ok()?
-            .map(|(username, secret)| Credential { username, secret })
-    }
-
     /// Compares what each running image is against what its tag points at.
-    async fn check_images(&self, stack: &RegisteredStack) -> Vec<ImageStatus> {
-        let Some(docker) = self.docker.as_ref() else {
-            return Vec::new();
-        };
-        let Ok(containers) = docker.list_containers().await else {
+    async fn check_images(
+        &self,
+        stack: &RegisteredStack,
+        containers: Option<&[Container]>,
+    ) -> Vec<ImageStatus> {
+        let (Some(docker), Some(containers)) = (self.docker.as_ref(), containers) else {
             return Vec::new();
         };
 

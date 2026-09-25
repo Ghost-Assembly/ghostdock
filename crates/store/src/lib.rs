@@ -72,6 +72,29 @@ impl Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// A stored Unix time as a date. A value out of range reads as the epoch
+/// rather than failing the whole row.
+#[must_use]
+pub fn timestamp(secs: i64) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::from_timestamp(secs, 0).unwrap_or_default()
+}
+
+/// Maps a write's error to `taken` when it broke a UNIQUE constraint.
+///
+/// The index, not a prior SELECT, is the authority on duplicates: checking
+/// first would race a concurrent write of the same name.
+fn unique_or(taken: Error) -> impl FnOnce(sqlx::Error) -> Error {
+    move |e| {
+        if e.as_database_error()
+            .is_some_and(sqlx::error::DatabaseError::is_unique_violation)
+        {
+            taken
+        } else {
+            Error::Sqlx(e)
+        }
+    }
+}
+
 /// A handle to the GhostDock database.
 ///
 /// Cloning is cheap: the underlying pool is shared. One pool serves the

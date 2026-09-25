@@ -34,7 +34,7 @@ async fn register_then_read_back() {
         s.stack_by_id(created.id).await.unwrap(),
         Some(created.clone())
     );
-    assert_eq!(s.stack_by_slug("blog").await.unwrap(), Some(created));
+    assert_eq!(s.stacks_list(LOCAL_HOST_ID).await.unwrap(), vec![created]);
     assert_eq!(
         s.stack_compose_yaml(1).await.unwrap().as_deref(),
         Some(YAML)

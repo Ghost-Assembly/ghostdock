@@ -25,7 +25,7 @@ fn account(row: &UserRow, caller: i64) -> Account {
     Account {
         id: row.id,
         username: row.username.clone(),
-        created_at: chrono::DateTime::from_timestamp(row.created_at, 0).unwrap_or_default(),
+        created_at: store::timestamp(row.created_at),
         you: row.id == caller,
     }
 }

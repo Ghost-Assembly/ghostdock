@@ -542,6 +542,142 @@ async fn a_failing_tool_says_why_as_a_result_not_a_protocol_error() {
     );
 }
 
+/// A git server that accepts connections and never answers, so a deploy
+/// fetching from it stays running until the listener is dropped.
+async fn silent_remote() -> (tokio::task::JoinHandle<()>, String) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("git://{}/stacks.git", listener.local_addr().unwrap());
+    let held = tokio::spawn(async move {
+        let mut open = Vec::new();
+        while let Ok((socket, _)) = listener.accept().await {
+            open.push(socket);
+        }
+    });
+    (held, url)
+}
+
+impl Setup {
+    /// A stack deployed from `url`, returning its id.
+    async fn git_stack(&self, url: &str) -> i64 {
+        let (status, repo) = self
+            .api("POST", "/api/v1/repos", Some(json!({ "url": url })))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{repo}");
+        let (status, stack) = self
+            .api(
+                "POST",
+                "/api/v1/hosts/1/stacks/git",
+                Some(json!({
+                    "name": "Busy", "repo_id": repo["id"],
+                    "git_ref": "refs/heads/main", "compose_path": "compose.yaml"
+                })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{stack}");
+        stack["id"].as_i64().unwrap()
+    }
+}
+
+#[tokio::test]
+async fn a_deploy_is_reported_when_it_ends() {
+    let s = setup().await;
+    // Compose refuses this at once, so the deploy ends quickly, and failed.
+    let (status, stack) = s
+        .api(
+            "POST",
+            "/api/v1/hosts/1/stacks",
+            Some(json!({ "name": "Broken", "compose_yaml": "services:\n  web: [\n" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{stack}");
+    let token = s.token(&["host.view", "stacks.deploy"]).await;
+
+    let started = std::time::Instant::now();
+    let body = s
+        .tool(
+            &token,
+            "deploy_stack",
+            json!({ "stack": "broken", "timeout_seconds": 60 }),
+        )
+        .await;
+
+    let result = &body["result"]["structuredContent"];
+    assert_eq!(result["status"], json!("failed"), "{body}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "not the whole wait: {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn a_deploy_still_running_when_the_wait_runs_out_says_so() {
+    let (remote, url) = silent_remote().await;
+    let s = setup().await;
+    let id = s.git_stack(&url).await;
+    let token = s.token(&["host.view", "stacks.deploy"]).await;
+
+    let body = s
+        .tool(
+            &token,
+            "deploy_stack",
+            json!({ "stack": id.to_string(), "timeout_seconds": 1 }),
+        )
+        .await;
+    remote.abort();
+
+    let result = &body["result"]["structuredContent"];
+    assert_eq!(result["status"], json!("running"), "{body}");
+    assert!(
+        result["note"]
+            .as_str()
+            .is_some_and(|n| n.contains("wait ran out")),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn revoking_the_token_ends_a_wait_for_an_outcome() {
+    // A wait can last fifteen minutes; it must not outlive the token that
+    // started it by more than a moment.
+    let (remote, url) = silent_remote().await;
+    let s = setup().await;
+    let id = s.git_stack(&url).await;
+    let token = s.token(&["host.view", "stacks.deploy"]).await;
+    let (_, list) = s.api("GET", "/api/v1/tokens", None).await;
+    let token_id = list[0]["id"].as_i64().unwrap();
+
+    let started = std::time::Instant::now();
+    let revoke = async {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        s.api("DELETE", &format!("/api/v1/tokens/{token_id}"), None)
+            .await;
+    };
+    let (body, ()) = tokio::join!(
+        s.tool(
+            &token,
+            "deploy_stack",
+            json!({ "stack": id.to_string(), "timeout_seconds": 120 }),
+        ),
+        revoke
+    );
+    remote.abort();
+
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "waited {:?} after the token was revoked",
+        started.elapsed()
+    );
+    let result = &body["result"]["structuredContent"];
+    assert_eq!(result["status"], json!("running"), "{body}");
+    assert!(
+        result["note"]
+            .as_str()
+            .is_some_and(|n| n.contains("could not be followed")),
+        "{body}"
+    );
+}
+
 #[tokio::test]
 async fn a_revoked_token_is_refused_on_its_next_call() {
     let s = setup().await;

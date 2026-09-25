@@ -43,7 +43,7 @@ async fn logs(
     Path((host_id, id)): Path<(i64, String)>,
     Query(query): Query<LogQuery>,
 ) -> Result<Json<Logs>, ApiError> {
-    let client = client_for(&state, host_id).await?;
+    let client = crate::hosts::daemon(&state, host_id).await?;
     let tail = query.tail.unwrap_or(DEFAULT_TAIL).clamp(1, MAX_TAIL);
     Ok(Json(client.container_logs(&id, tail).await?))
 }
@@ -74,7 +74,7 @@ async fn follow(
     use axum::response::sse::{Event, KeepAlive, Sse};
     use futures::StreamExt as _;
 
-    let client = client_for(&state, host_id).await?;
+    let client = crate::hosts::daemon(&state, host_id).await?;
     let revoked = state.revocations.until_revoked(&principal);
 
     let lines = client
@@ -112,64 +112,37 @@ async fn follow_socket(
     Query(query): Query<FollowQuery>,
     upgrade: axum::extract::ws::WebSocketUpgrade,
 ) -> Result<axum::response::Response, ApiError> {
-    let client = client_for(&state, host_id).await?.clone();
+    let client = crate::hosts::daemon(&state, host_id).await?.clone();
     let revoked = state.revocations.until_revoked(&principal);
-    let lines = client.follow_logs(&id, query.since);
-    Ok(upgrade.on_upgrade(move |socket| pump_lines(socket, lines, revoked)))
+    let lines = Lines(Box::pin(client.follow_logs(&id, query.since)));
+    Ok(upgrade.on_upgrade(move |socket| crate::socket::pump(socket, lines, revoked)))
 }
 
-async fn pump_lines(
-    socket: axum::extract::ws::WebSocket,
-    lines: impl futures::Stream<Item = docker::Result<shared::logs::LogLine>> + Send + 'static,
-    revoked: impl std::future::Future<Output = ()> + Send + 'static,
-) {
-    use axum::extract::ws::{CloseFrame, Message, close_code};
-    use futures::{SinkExt as _, StreamExt as _};
+/// One container's output, a JSON line a message.
+struct Lines<S>(std::pin::Pin<Box<S>>);
 
-    const PING: std::time::Duration = std::time::Duration::from_secs(20);
-    let close = |code, reason: &'static str| {
-        Message::Close(Some(CloseFrame {
-            code,
-            reason: reason.into(),
-        }))
-    };
+impl<S> crate::socket::Source for Lines<S>
+where
+    S: futures::Stream<Item = docker::Result<shared::logs::LogLine>> + Send,
+{
+    async fn next(&mut self) -> crate::socket::Next {
+        use crate::socket::{Next, close};
+        use axum::extract::ws::{Message, close_code};
+        use futures::StreamExt as _;
 
-    let (mut sink, mut incoming) = socket.split();
-    let mut lines = Box::pin(lines);
-    let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + PING, PING);
-    tokio::pin!(revoked);
-    loop {
-        tokio::select! {
-            () = &mut revoked => {
-                let _ = sink.send(close(close_code::POLICY, "revoked")).await;
-                return;
-            }
-            line = lines.next() => match line {
+        loop {
+            match self.0.next().await {
                 Some(Ok(line)) => {
-                    let Ok(json) = serde_json::to_string(&line) else { continue };
-                    if sink.send(Message::Text(json.into())).await.is_err() {
-                        return;
+                    if let Ok(json) = serde_json::to_string(&line) {
+                        return Next::Send(Message::Text(json.into()));
                     }
                 }
                 Some(Err(e)) => {
                     tracing::warn!(error = %e, "log stream ended with an error");
-                    let _ = sink.send(close(close_code::ERROR, "failed")).await;
-                    return;
+                    return Next::End(Some(close(close_code::ERROR, "failed")));
                 }
-                None => {
-                    let _ = sink.send(close(close_code::NORMAL, "stopped")).await;
-                    return;
-                }
-            },
-            _ = ping.tick() => {
-                if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
-                    return;
-                }
+                None => return Next::End(Some(close(close_code::NORMAL, "stopped"))),
             }
-            message = incoming.next() => match message {
-                Some(Ok(Message::Close(_)) | Err(_)) | None => return,
-                Some(Ok(_)) => {}
-            },
         }
     }
 }
@@ -187,7 +160,7 @@ async fn logs_text(
 ) -> Result<axum::response::Response, ApiError> {
     use axum::response::IntoResponse as _;
 
-    let client = client_for(&state, host_id).await?;
+    let client = crate::hosts::daemon(&state, host_id).await?;
     let tail = query.tail.unwrap_or(MAX_TAIL).clamp(1, MAX_TAIL);
     let logs = client.container_logs(&id, tail).await?;
 
@@ -223,7 +196,7 @@ async fn preview(
     State(state): State<AppState>,
     Path(host_id): Path<i64>,
 ) -> Result<Json<CleanupPreview>, ApiError> {
-    let client = client_for(&state, host_id).await?;
+    let client = crate::hosts::daemon(&state, host_id).await?;
     Ok(Json(
         client.cleanup_preview(&registered(&state).await?).await?,
     ))
@@ -265,7 +238,7 @@ async fn clean(
     host_id: i64,
     request: CleanupRequest,
 ) -> Result<CleanupResult, ApiError> {
-    let client = client_for(&state, host_id).await?.clone();
+    let client = crate::hosts::daemon(&state, host_id).await?;
 
     // Re-read rather than trusting a list the caller sends: the preview may
     // be minutes old, and acting on it could remove an image that has since
@@ -295,13 +268,4 @@ async fn clean(
     };
     crate::audit::record(&state, &principal, action, &target, Some(&detail)).await;
     Ok(result)
-}
-
-async fn client_for(state: &AppState, host_id: i64) -> Result<&docker::Client, ApiError> {
-    state
-        .store
-        .host_by_id(host_id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
-    state.docker.as_ref().ok_or(ApiError::DaemonUnavailable)
 }
