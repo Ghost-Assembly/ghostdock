@@ -33,7 +33,7 @@ async fn now(
     Path(host_id): Path<i64>,
 ) -> Result<Json<Now>, ApiError> {
     host(&state, host_id).await?;
-    Ok(Json(state.sampler.now()))
+    Ok(Json(Now::clone(&state.sampler.now())))
 }
 
 #[derive(Debug, Deserialize)]

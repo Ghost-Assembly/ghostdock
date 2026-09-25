@@ -3,14 +3,16 @@
 pub mod host;
 pub mod routes;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
+use axum::extract::ws::Utf8Bytes;
 use domain::metrics::{Accumulator, sum_at};
 use shared::metrics::{
     Current, LIVE_STEP, MAX_POINTS, Now, Reading, StackNow, SubjectKind, Target,
 };
 use store::metrics::MetricsStore;
+use tokio::sync::watch;
 
 pub use host::HostPaths;
 
@@ -43,11 +45,27 @@ struct Live {
 
 #[derive(Default)]
 struct Inner {
-    live: HashMap<(SubjectKind, String), Live>,
-    now: Now,
+    /// By kind, then by key: a reading is filed by a borrowed key, so a
+    /// sample costs no allocation once its subject is known.
+    live: HashMap<SubjectKind, HashMap<String, Live>>,
+    now: Arc<Now>,
     unavailable: bool,
     host_memory: Option<u64>,
     host_cpus: Option<u32>,
+}
+
+impl Inner {
+    fn of(&self, kind: SubjectKind) -> impl Iterator<Item = (&String, &Live)> {
+        self.live.get(&kind).into_iter().flatten()
+    }
+}
+
+/// A tick as the event socket sends it: exactly `ServerEvent::Metrics`,
+/// serialised from a borrow rather than a copy of the snapshot.
+#[derive(serde::Serialize)]
+#[serde(tag = "type", rename = "metrics")]
+struct MetricsEvent<'a> {
+    now: &'a Now,
 }
 
 #[derive(Clone)]
@@ -58,6 +76,11 @@ pub struct Sampler {
     /// Sizing advice and when it was worked out. An async lock, held while
     /// working it out, so requests arriving together share one pass.
     sizing: Arc<tokio::sync::Mutex<Option<Advice>>>,
+    /// The latest tick as event JSON, written once and shared by every
+    /// socket watching figures. Not on the runner's broadcast: that would
+    /// copy the snapshot into every receiver, and each socket would
+    /// serialise it again.
+    ticks: Arc<watch::Sender<Option<Utf8Bytes>>>,
 }
 
 /// Sizing advice and the minute it was worked out.
@@ -81,6 +104,7 @@ impl Sampler {
             store,
             paths,
             sizing: Arc::default(),
+            ticks: Arc::new(watch::Sender::new(None)),
         }
     }
 
@@ -95,6 +119,12 @@ impl Sampler {
         self.store.as_ref()
     }
 
+    /// Each tick from now on, as the JSON of a `ServerEvent::Metrics`.
+    #[must_use]
+    pub fn ticks(&self) -> watch::Receiver<Option<Utf8Bytes>> {
+        self.ticks.subscribe()
+    }
+
     pub fn observe(
         &self,
         kind: SubjectKind,
@@ -104,12 +134,22 @@ impl Sampler {
         reading: &Reading,
     ) {
         let mut inner = self.lock();
-        let live = inner.live.entry((kind, key.to_owned())).or_default();
-        if project.is_some() {
-            live.project = project.map(str::to_owned);
+        let subjects = inner.live.entry(kind).or_default();
+        if !subjects.contains_key(key) {
+            subjects.insert(key.to_owned(), Live::default());
         }
-        if service.is_some() {
-            live.service = service.map(str::to_owned);
+        let Some(live) = subjects.get_mut(key) else {
+            return;
+        };
+        if let Some(project) = project
+            && live.project.as_deref() != Some(project)
+        {
+            live.project = Some(project.to_owned());
+        }
+        if let Some(service) = service
+            && live.service.as_deref() != Some(service)
+        {
+            live.service = Some(service.to_owned());
         }
         live.pending.add(reading);
     }
@@ -129,11 +169,20 @@ impl Sampler {
         self.lock().host_memory
     }
 
-    /// Closes the 5 s point at `t` for every subject that reported, and
-    /// rebuilds the snapshot.
-    pub fn tick(&self, t: i64) -> Now {
+    /// Closes the 5 s point at `t` for every subject that reported,
+    /// rebuilds the snapshot, and hands it to sockets watching figures.
+    pub fn tick(&self, t: i64) -> Arc<Now> {
+        let now = self.snapshot(t);
+        // Outside the lock: sampling carries on while this is written.
+        if let Ok(json) = serde_json::to_string(&MetricsEvent { now: &now }) {
+            self.ticks.send_replace(Some(json.into()));
+        }
+        now
+    }
+
+    fn snapshot(&self, t: i64) -> Arc<Now> {
         let mut inner = self.lock();
-        for live in inner.live.values_mut() {
+        for live in inner.live.values_mut().flat_map(HashMap::values_mut) {
             if let Some(point) = live.pending.finish(t) {
                 live.minute.add(&point);
                 if live.ring.len() == RING {
@@ -147,10 +196,9 @@ impl Sampler {
         let fresh = |l: &Live| t - l.last_seen <= SILENT_SECS && l.latest.is_some();
         let current = |kind: SubjectKind| {
             let mut list: Vec<Current> = inner
-                .live
-                .iter()
-                .filter(|((k, _), l)| *k == kind && fresh(l))
-                .filter_map(|((_, key), l)| {
+                .of(kind)
+                .filter(|(_, l)| fresh(l))
+                .filter_map(|(key, l)| {
                     Some(Current {
                         key: key.clone(),
                         project: l.project.clone(),
@@ -162,34 +210,38 @@ impl Sampler {
             list
         };
         let containers = current(SubjectKind::Container);
-        let mut projects: Vec<String> = containers
-            .iter()
-            .filter_map(|c| c.project.clone())
-            .collect();
-        projects.sort();
-        projects.dedup();
-        let stacks = projects
+        // One pass each over the running containers and over every
+        // container, rather than one per stack.
+        let mut readings: BTreeMap<&str, Vec<Reading>> = BTreeMap::new();
+        for c in &containers {
+            if let Some(project) = c.project.as_deref() {
+                readings.entry(project).or_default().push(c.reading);
+            }
+        }
+        let mut hours = cpu_hours(&inner, t);
+        let stacks = readings
             .into_iter()
-            .map(|project| {
-                let readings: Vec<Reading> = containers
-                    .iter()
-                    .filter(|c| c.project.as_deref() == Some(&project))
-                    .map(|c| c.reading)
-                    .collect();
-                let cpu_hour = stack_cpu_hour(&inner, &project, t);
-                StackNow {
-                    reading: sum_at(t, &readings),
-                    project,
-                    cpu_hour,
-                }
+            .map(|(project, readings)| StackNow {
+                reading: sum_at(t, &readings),
+                cpu_hour: hours.remove(project).map_or_else(
+                    || vec![None; 60],
+                    |minutes| {
+                        minutes
+                            .into_iter()
+                            .map(|(sum, n)| (n > 0).then_some(sum))
+                            .collect()
+                    },
+                ),
+                project: project.to_owned(),
             })
             .collect();
         let host = inner
             .live
-            .get(&(SubjectKind::Host, "host".to_owned()))
+            .get(&SubjectKind::Host)
+            .and_then(|hosts| hosts.get("host"))
             .filter(|l| fresh(l))
             .and_then(|l| l.latest);
-        let now = Now {
+        let now = Arc::new(Now {
             at: t,
             host,
             host_cpus: inner.host_cpus,
@@ -198,14 +250,14 @@ impl Sampler {
             disks: current(SubjectKind::Disk),
             networks: current(SubjectKind::Network),
             containers_unavailable: inner.unavailable,
-        };
-        inner.now = now.clone();
+        });
+        inner.now = Arc::clone(&now);
         now
     }
 
     #[must_use]
-    pub fn now(&self) -> Now {
-        self.lock().now.clone()
+    pub fn now(&self) -> Arc<Now> {
+        Arc::clone(&self.lock().now)
     }
 
     /// Every subject's folded minute, stamped `t`, and a fresh minute.
@@ -213,22 +265,21 @@ impl Sampler {
     /// containers would otherwise pile up for the life of the process.
     pub fn take_minute(&self, t: i64) -> Vec<MinuteRow> {
         let mut inner = self.lock();
-        let rows = inner
-            .live
-            .iter_mut()
-            .filter_map(|((kind, key), live)| {
-                Some(MinuteRow {
-                    kind: *kind,
-                    key: key.clone(),
-                    project: live.project.clone(),
-                    service: live.service.clone(),
-                    reading: live.minute.finish(t)?,
-                })
-            })
-            .collect();
-        inner
-            .live
-            .retain(|_, live| !live.pending.is_empty() || t - live.last_seen <= HOUR);
+        let mut rows = Vec::new();
+        for (kind, subjects) in &mut inner.live {
+            for (key, live) in subjects.iter_mut() {
+                if let Some(reading) = live.minute.finish(t) {
+                    rows.push(MinuteRow {
+                        kind: *kind,
+                        key: key.clone(),
+                        project: live.project.clone(),
+                        service: live.service.clone(),
+                        reading,
+                    });
+                }
+            }
+            subjects.retain(|_, live| !live.pending.is_empty() || t - live.last_seen <= HOUR);
+        }
         rows
     }
 
@@ -243,14 +294,14 @@ impl Sampler {
         match target {
             Target::Subject(kind, key) => inner
                 .live
-                .get(&(*kind, key.clone()))
+                .get(kind)
+                .and_then(|subjects| subjects.get(key.as_str()))
                 .map(|l| l.ring.iter().filter(recent).copied().collect())
                 .unwrap_or_default(),
             Target::Stack(project) => {
-                let mut by_t: std::collections::BTreeMap<i64, Vec<Reading>> =
-                    std::collections::BTreeMap::new();
-                for ((kind, _), live) in &inner.live {
-                    if *kind == SubjectKind::Container && live.project.as_deref() == Some(project) {
+                let mut by_t: BTreeMap<i64, Vec<Reading>> = BTreeMap::new();
+                for (_, live) in inner.of(SubjectKind::Container) {
+                    if live.project.as_deref() == Some(project) {
                         for r in live.ring.iter().filter(recent) {
                             by_t.entry(r.t).or_default().push(*r);
                         }
@@ -262,18 +313,19 @@ impl Sampler {
     }
 }
 
-/// A stack's CPU over the last hour, one point a minute, oldest first; a
-/// minute with nothing running is `None`.
-fn stack_cpu_hour(inner: &Inner, project: &str, t: i64) -> Vec<Option<f64>> {
+/// Every stack's CPU over the last hour, one slot a minute, oldest first:
+/// the sum of its containers' per-minute averages, and how many added to
+/// it. A slot nothing added to had nothing running.
+fn cpu_hours(inner: &Inner, t: i64) -> HashMap<&str, Vec<(f64, u32)>> {
     let start = t - 3_600 + 60;
-    let mut minutes = vec![(0.0_f64, 0_u32); 60];
-    for ((kind, _), live) in &inner.live {
-        if *kind != SubjectKind::Container || live.project.as_deref() != Some(project) {
+    let mut stacks: HashMap<&str, Vec<(f64, u32)>> = HashMap::new();
+    for (_, live) in inner.of(SubjectKind::Container) {
+        let Some(project) = live.project.as_deref() else {
             continue;
-        }
+        };
         // Per container, average its points in each minute; then add
         // containers together.
-        let mut own = vec![(0.0_f64, 0_u32); 60];
+        let mut own = [(0.0_f64, 0_u32); 60];
         for r in &live.ring {
             let idx = (r.t - start).div_euclid(60);
             if let (Ok(i), Some(cpu)) = (usize::try_from(idx), r.cpu)
@@ -283,6 +335,7 @@ fn stack_cpu_hour(inner: &Inner, project: &str, t: i64) -> Vec<Option<f64>> {
                 slot.1 += 1;
             }
         }
+        let minutes = stacks.entry(project).or_insert_with(|| vec![(0.0, 0); 60]);
         for (slot, (sum, n)) in minutes.iter_mut().zip(own) {
             if n > 0 {
                 slot.0 += sum / f64::from(n);
@@ -290,10 +343,7 @@ fn stack_cpu_hour(inner: &Inner, project: &str, t: i64) -> Vec<Option<f64>> {
             }
         }
     }
-    minutes
-        .into_iter()
-        .map(|(sum, n)| (n > 0).then_some(sum))
-        .collect()
+    stacks
 }
 
 /// Unix seconds, rounded down to a multiple of `step`.
@@ -369,12 +419,9 @@ impl Sampler {
         let inner = self.lock();
         let since = inner.now.at - HOUR;
         let mut list: Vec<_> = inner
-            .live
-            .iter()
-            .filter(|((kind, _), live)| {
-                *kind == SubjectKind::Container && live.project.as_deref() == Some(project)
-            })
-            .filter_map(|((_, key), live)| {
+            .of(SubjectKind::Container)
+            .filter(|(_, live)| live.project.as_deref() == Some(project))
+            .filter_map(|(key, live)| {
                 let points: Vec<Reading> =
                     live.ring.iter().filter(|r| r.t > since).copied().collect();
                 (!points.is_empty())
@@ -390,8 +437,7 @@ impl Sampler {
     pub fn spawn(self, docker: Option<docker::Client>, runner: crate::runner::Runner) {
         self.set_unavailable(docker.is_none());
         let ticks = self.clone();
-        let publisher = runner.clone();
-        tokio::spawn(async move { ticks.run_ticks(publisher).await });
+        tokio::spawn(async move { ticks.run_ticks().await });
         let minutes = self.clone();
         tokio::spawn(async move { minutes.run_minutes().await });
         if let Some(docker) = docker {
@@ -400,7 +446,7 @@ impl Sampler {
         }
     }
 
-    async fn run_ticks(self, runner: crate::runner::Runner) {
+    async fn run_ticks(self) {
         let mut prev_host: Option<(domain::metrics::HostCounters, std::time::Instant)> = None;
         let mut prev_nets: HashMap<String, ((u64, u64), std::time::Instant)> = HashMap::new();
         let mut every = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -444,8 +490,7 @@ impl Sampler {
                 };
                 self.observe(SubjectKind::Disk, &key, None, None, &r);
             }
-            let now = self.tick(aligned(std::time::SystemTime::now(), TICK));
-            runner.publish(shared::event::ServerEvent::Metrics { now: Box::new(now) });
+            self.tick(aligned(std::time::SystemTime::now(), TICK));
         }
     }
 
@@ -772,15 +817,28 @@ mod forgetting {
             }
         }
         let inner = s.lock();
-        assert!(
-            !inner
-                .live
-                .contains_key(&(SubjectKind::Container, "job-1".to_owned()))
-        );
-        assert!(
-            inner
-                .live
-                .contains_key(&(SubjectKind::Host, "host".to_owned()))
+        assert!(!inner.of(SubjectKind::Container).any(|(k, _)| k == "job-1"));
+        assert!(inner.of(SubjectKind::Host).any(|(k, _)| k == "host"));
+    }
+
+    #[test]
+    fn a_tick_is_sent_as_the_metrics_event_itself() {
+        // Serialised from a borrow, it must still read as the event the
+        // client parses.
+        let s = Sampler::new(None, HostPaths::default());
+        let mut ticks = s.ticks();
+        s.observe(SubjectKind::Host, "host", None, None, &cpu(0.1));
+        s.observe(SubjectKind::Container, "x-1", Some("x"), None, &cpu(0.2));
+        let now = s.tick(5);
+
+        assert!(ticks.has_changed().unwrap_or(false));
+        let sent = ticks.borrow_and_update().clone().unwrap_or_default();
+        let event = shared::event::ServerEvent::Metrics {
+            now: Box::new(Now::clone(&now)),
+        };
+        assert_eq!(
+            sent.as_str(),
+            serde_json::to_string(&event).unwrap_or_default()
         );
     }
 }

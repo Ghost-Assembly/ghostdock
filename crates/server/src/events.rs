@@ -17,7 +17,7 @@ use axum::routing::get;
 use futures::stream::{Stream, StreamExt};
 use tokio_stream::wrappers::BroadcastStream;
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use shared::event::ServerEvent;
 
@@ -50,12 +50,14 @@ async fn socket(
 ) -> Response {
     let revoked = state.revocations.until_revoked(&principal);
     let events = state.runner.subscribe();
-    upgrade.on_upgrade(move |socket| pump(socket, events, revoked))
+    let ticks = state.sampler.ticks();
+    upgrade.on_upgrade(move |socket| pump(socket, events, ticks, revoked))
 }
 
 async fn pump(
     socket: WebSocket,
     mut events: tokio::sync::broadcast::Receiver<ServerEvent>,
+    mut ticks: tokio::sync::watch::Receiver<Option<Utf8Bytes>>,
     revoked: impl std::future::Future<Output = ()> + Send + 'static,
 ) {
     use futures::SinkExt as _;
@@ -73,11 +75,21 @@ async fn pump(
                 let _ = sink.send(Message::Close(None)).await;
                 return;
             }
+            // Already written once for every socket; sent as it is.
+            changed = ticks.changed(), if watching => {
+                let tick = changed.ok().and_then(|()| ticks.borrow_and_update().clone());
+                match tick {
+                    Some(json) => {
+                        if sink.send(Message::Text(json)).await.is_err() {
+                            return;
+                        }
+                    }
+                    // The sampler is gone; nothing more will come.
+                    None => watching = false,
+                }
+            }
             received = events.recv() => match received {
                 Ok(event) => {
-                    if matches!(event, ServerEvent::Metrics { .. }) && !watching {
-                        continue;
-                    }
                     let Ok(json) = serde_json::to_string(&event) else { continue };
                     if sink.send(Message::Text(json.into())).await.is_err() {
                         return;
@@ -96,7 +108,11 @@ async fn pump(
             message = incoming.next() => match message {
                 // The only thing a client says: whether it is showing figures.
                 Some(Ok(Message::Text(text))) => match serde_json::from_str::<ClientMessage>(&text) {
-                    Ok(ClientMessage { watch: Some(Topic::Metrics), .. }) => watching = true,
+                    Ok(ClientMessage { watch: Some(Topic::Metrics), .. }) => {
+                        // From the next tick on, as before a socket watched.
+                        ticks.mark_unchanged();
+                        watching = true;
+                    }
                     Ok(ClientMessage { unwatch: Some(Topic::Metrics), .. }) => watching = false,
                     _ => {}
                 },
@@ -128,11 +144,9 @@ async fn stream(
     let events = BroadcastStream::new(state.runner.subscribe()).filter_map(|received| async move {
         // A receiver that falls behind is told it lagged rather than being
         // silently fed a gap; dropping those keeps the stream well-formed.
+        // Figures never come this way: they go only to sockets that ask,
+        // and an SSE client cannot ask.
         let event = received.ok()?;
-        // Figures go only to sockets that ask; an SSE client cannot ask.
-        if matches!(event, ServerEvent::Metrics { .. }) {
-            return None;
-        }
         Event::default()
             .event(event.name())
             .json_data(&event)

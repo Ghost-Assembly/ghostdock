@@ -308,12 +308,6 @@ async fn following_logs_over_a_socket_says_when_there_is_no_daemon() {
     assert_eq!(status_of(refused), 503);
 }
 
-fn tick() -> ServerEvent {
-    ServerEvent::Metrics {
-        now: Box::default(),
-    }
-}
-
 #[tokio::test]
 async fn metrics_reach_only_sockets_that_asked_for_them() {
     let s = serve().await;
@@ -322,7 +316,8 @@ async fn metrics_reach_only_sockets_that_asked_for_them() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Not watching: a tick is skipped, and the next event is the change.
-    s.state.runner.publish(tick());
+    s.state.sampler.tick(5);
+    tokio::time::sleep(Duration::from_millis(50)).await;
     s.state.runner.publish(change());
     let first = tokio::time::timeout(Duration::from_secs(5), ws.next())
         .await
@@ -338,12 +333,16 @@ async fn metrics_reach_only_sockets_that_asked_for_them() {
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
-    s.state.runner.publish(tick());
+    s.state.sampler.tick(10);
     let next = tokio::time::timeout(Duration::from_secs(5), ws.next())
         .await
         .unwrap()
         .unwrap()
         .unwrap();
     let Message::Text(text) = next else { panic!() };
-    assert!(text.contains("\"type\":\"metrics\""), "{text}");
+    let event: ServerEvent = serde_json::from_str(&text).expect("an event the client reads");
+    let ServerEvent::Metrics { now } = event else {
+        panic!("{text}")
+    };
+    assert_eq!(now.at, 10, "the tick that came after asking, not before");
 }
