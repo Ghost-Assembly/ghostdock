@@ -10,6 +10,7 @@ use shared::update::StackUpdate;
 use crate::api;
 use crate::load::Load;
 use crate::screen::Screen;
+use crate::ui::Row;
 
 #[component]
 pub fn Updates() -> impl IntoView {
@@ -21,7 +22,7 @@ pub fn Updates() -> impl IntoView {
     let screen = Screen::new();
     let refresh = move || {
         screen.load(async move {
-            load.set(Load::from(api::updates(1).await));
+            load.set(Load::from(api::updates().await));
         });
     };
     Effect::new(move |_| refresh());
@@ -205,16 +206,7 @@ fn UpdateRows(updates: Vec<StackUpdate>, state: &'static str) -> impl IntoView {
                         });
                     let badge = if update.auto_apply { "auto" } else { "" };
                     let href = format!("/stacks/{}", update.stack.id);
-                    view! {
-                        <li class="row">
-                            <a class="row-link" href=href>
-                                <span class="row-bar" data-state=state></span>
-                                <span class="row-name">{update.stack.name.clone()}</span>
-                                <span class="row-detail">{detail}</span>
-                                <span class="row-count">{badge}</span>
-                            </a>
-                        </li>
-                    }
+                    view! { <Row state href name=update.stack.name detail count=badge /> }
                 })
                 .collect_view()}
         </ul>

@@ -1,7 +1,6 @@
 //! What one operation actually printed.
 
 use leptos::prelude::*;
-use leptos_router::hooks::use_params_map;
 use shared::deployment::{DeploymentDetail, DeploymentStatus};
 use shared::event::ServerEvent;
 
@@ -9,11 +8,12 @@ use crate::api;
 use crate::events::use_events;
 use crate::load::Load;
 use crate::screen::Screen;
+use crate::status::Outcome;
+use crate::ui::route_id;
 
 #[component]
 pub fn DeploymentView() -> impl IntoView {
-    let params = use_params_map();
-    let id = Memo::new(move |_| params.get().get("id").and_then(|v| v.parse::<i64>().ok()));
+    let id = route_id();
     let detail = RwSignal::new(Load::<DeploymentDetail>::Loading);
     let screen = Screen::new();
     // Only the newest read may land: one started before the operation
@@ -23,10 +23,7 @@ pub fn DeploymentView() -> impl IntoView {
     let refresh = move || {
         let mine = latest.get_value() + 1;
         latest.set_value(mine);
-        let Some(wanted) = id.get_untracked() else {
-            detail.set(Load::Failed("There is no such operation.".to_owned()));
-            return;
-        };
+        let wanted = id.get_untracked();
         screen.load(async move {
             let answer = api::deployment(wanted).await;
             if latest.try_get_value() == Some(mine) {
@@ -47,7 +44,7 @@ pub fn DeploymentView() -> impl IntoView {
             ServerEvent::DeploymentOutput {
                 deployment_id,
                 line,
-            } if Some(deployment_id) == id.get_untracked() => {
+            } if *deployment_id == id.get_untracked() => {
                 detail.update(|d| {
                     if let Load::Ready(d) = d
                         && d.deployment.status == DeploymentStatus::Running
@@ -55,14 +52,14 @@ pub fn DeploymentView() -> impl IntoView {
                         if !d.log.is_empty() && !d.log.ends_with('\n') {
                             d.log.push('\n');
                         }
-                        d.log.push_str(&line);
+                        d.log.push_str(line);
                     }
                 });
             }
             // The stored log is the whole of it, so the ending is read
             // rather than pieced together.
             ServerEvent::DeploymentFinished { deployment }
-                if Some(deployment.id) == id.get_untracked() =>
+                if deployment.id == id.get_untracked() =>
             {
                 refresh();
             }
@@ -86,22 +83,7 @@ pub fn DeploymentView() -> impl IntoView {
             }
             .into_any(),
             Load::Ready(d) => {
-                let outcome = match d.deployment.status {
-                    DeploymentStatus::Succeeded => "Succeeded".to_owned(),
-                    DeploymentStatus::Running => "Still running".to_owned(),
-                    DeploymentStatus::Failed => d
-                        .deployment
-                        .exit_code
-                        .map_or_else(
-                            || "Failed".to_owned(),
-                            |c| format!("Failed with exit code {c}"),
-                        ),
-                };
-                let tone = match d.deployment.status {
-                    DeploymentStatus::Succeeded => "quiet",
-                    DeploymentStatus::Running => "degraded",
-                    DeploymentStatus::Failed => "bad",
-                };
+                let outcome = Outcome::of(&d.deployment);
                 let when = crate::time::local(d.deployment.started_at, "%d %b %Y, %H:%M");
                 // Compose's own words, verbatim. A summary here would hide
                 // the one line that explains what went wrong.
@@ -112,7 +94,7 @@ pub fn DeploymentView() -> impl IntoView {
                 };
                 view! {
                     <section class="verdict">
-                        <p class="verdict-line" data-tone=tone>{outcome}</p>
+                        <p class="verdict-line" data-tone=outcome.tone>{outcome.heading()}</p>
                         <p class="verdict-count">{when}</p>
                     </section>
                     <pre class="log" aria-live="polite">{log}</pre>

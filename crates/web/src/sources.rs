@@ -11,6 +11,7 @@ use crate::api;
 use crate::confirm::Confirm;
 use crate::load::Load;
 use crate::screen::Screen;
+use crate::ui::{ErrorNotice, Field, Row};
 
 #[component]
 pub fn Sources() -> impl IntoView {
@@ -37,9 +38,7 @@ pub fn Sources() -> impl IntoView {
             <a class="topbar-link" href="/settings">"Back"</a>
         </header>
 
-        <Show when=move || error.get().is_some()>
-            <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
-        </Show>
+        <ErrorNotice error />
 
         <h2 class="group-heading">"Repositories"</h2>
         {move || match repos.get() {
@@ -99,14 +98,13 @@ fn RepoRows(repos: Vec<Repo>) -> impl IntoView {
                         .clone()
                         .map_or_else(|| "No credential".to_owned(), |name| format!("Using {name}"));
                     view! {
-                        <li class="row">
-                            <a class="row-link" href=format!("/repos/{}/discover", repo.id)>
-                                <span class="row-bar" data-state="running"></span>
-                                <span class="row-name">{repo.url.clone()}</span>
-                                <span class="row-detail">{detail}</span>
-                                <span class="row-count">"Find stacks"</span>
-                            </a>
-                        </li>
+                        <Row
+                            state="running"
+                            href=format!("/repos/{}/discover", repo.id)
+                            name=repo.url
+                            detail
+                            count="Find stacks"
+                        />
                     }
                 })
                 .collect_view()}
@@ -147,20 +145,15 @@ fn CredentialRows(
                         );
                     });
                     view! {
-                        <li class="row">
-                            <span class="row-link">
-                                <span class="row-bar" data-state="running"></span>
-                                <span class="row-name">{credential.name.clone()}</span>
-                                <span class="row-detail">{credential.username.clone()}</span>
-                                <Confirm
-                                    label="Remove"
-                                    confirm="Remove it"
-                                    row=true
-                                    disabled=Signal::derive(move || removing.get())
-                                    on_confirm=remove
-                                />
-                            </span>
-                        </li>
+                        <Row state="running" name=credential.name detail=credential.username>
+                            <Confirm
+                                label="Remove"
+                                confirm="Remove it"
+                                row=true
+                                disabled=Signal::derive(move || removing.get())
+                                on_confirm=remove
+                            />
+                        </Row>
                     }
                 })
                 .collect_view()}
@@ -205,11 +198,8 @@ fn NewRepoForm(
 
     view! {
         <form on:submit=submit>
-            <Show when=move || error.get().is_some()>
-                <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
-            </Show>
-            <label class="field">
-                <span class="field-label">"Repository URL"</span>
+            <ErrorNotice error />
+            <Field label="Repository URL">
                 <input
                     class="field-input"
                     type="text"
@@ -220,9 +210,8 @@ fn NewRepoForm(
                     prop:value=move || url.get()
                     on:input=move |ev| url.set(event_target_value(&ev))
                 />
-            </label>
-            <label class="field">
-                <span class="field-label">"Credential"</span>
+            </Field>
+            <Field label="Credential">
                 <select
                     class="field-input"
                     prop:value=move || credential_id.get()
@@ -253,7 +242,7 @@ fn NewRepoForm(
                             .collect_view()
                     }}
                 </select>
-            </label>
+            </Field>
             <button class="button button-quiet" type="submit" disabled=move || busy.get()>
                 {move || if busy.get() { "Adding" } else { "Add repository" }}
             </button>
@@ -303,11 +292,8 @@ fn NewCredentialForm(on_added: impl Fn() + Copy + Send + Sync + 'static) -> impl
 
     view! {
         <form on:submit=submit>
-            <Show when=move || error.get().is_some()>
-                <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
-            </Show>
-            <label class="field">
-                <span class="field-label">"Name"</span>
+            <ErrorNotice error />
+            <Field label="Name">
                 <input
                     class="field-input"
                     type="text"
@@ -316,9 +302,8 @@ fn NewCredentialForm(on_added: impl Fn() + Copy + Send + Sync + 'static) -> impl
                     prop:value=move || name.get()
                     on:input=move |ev| name.set(event_target_value(&ev))
                 />
-            </label>
-            <label class="field">
-                <span class="field-label">"Username"</span>
+            </Field>
+            <Field label="Username">
                 <input
                     class="field-input"
                     type="text"
@@ -328,9 +313,8 @@ fn NewCredentialForm(on_added: impl Fn() + Copy + Send + Sync + 'static) -> impl
                     prop:value=move || username.get()
                     on:input=move |ev| username.set(event_target_value(&ev))
                 />
-            </label>
-            <label class="field">
-                <span class="field-label">"Token"</span>
+            </Field>
+            <Field label="Token">
                 <input
                     class="field-input"
                     type="password"
@@ -339,7 +323,7 @@ fn NewCredentialForm(on_added: impl Fn() + Copy + Send + Sync + 'static) -> impl
                     prop:value=move || secret.get()
                     on:input=move |ev| secret.set(event_target_value(&ev))
                 />
-            </label>
+            </Field>
             <button class="button button-quiet" type="submit" disabled=move || busy.get()>
                 {move || if busy.get() { "Adding" } else { "Add credential" }}
             </button>

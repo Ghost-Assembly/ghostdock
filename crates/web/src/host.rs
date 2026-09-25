@@ -13,6 +13,7 @@ use crate::events::use_events;
 use crate::load::Load;
 use crate::resources::{Charts, RangePicker, SizingRows};
 use crate::screen::Screen;
+use crate::ui::{ErrorNotice, Row};
 
 const TOP: usize = 5;
 
@@ -36,51 +37,61 @@ pub fn Host() -> impl IntoView {
     if let Some(events) = use_events() {
         events.on(move |event| {
             if let ServerEvent::Metrics { now: fresh } = event {
-                now.set(Some(*fresh));
+                now.set(Some((**fresh).clone()));
             }
         });
     }
 
-    let summary = move || {
-        let n = now.get()?;
-        let host = n.host?;
-        let cpus = n.host_cpus.map(|c| format!(" of {c}")).unwrap_or_default();
-        let cpu = host.cpu.map(|c| format!("{}{cpus}", format_cores(c)));
-        let mem = match (host.mem, host.mem_limit) {
-            (Some(used), Some(total)) => Some(format!(
-                "{} of {} memory",
-                format_bytes(used),
-                format_bytes(total)
-            )),
-            _ => None,
-        };
-        // Only the figures there are: a missing one leaves no stray comma.
-        let parts: Vec<String> = [cpu, mem].into_iter().flatten().collect();
-        (!parts.is_empty()).then(|| parts.join(", "))
+    // Each part of the figures is read out once per tick, and a part that
+    // did not change since the last one leaves its piece of the page alone.
+    let part = move |f: fn(&Now) -> Vec<Current>| {
+        Memo::new(move |_| now.with(|n| n.as_ref().map(f).unwrap_or_default()))
     };
+    let disks = part(|n| n.disks.clone());
+    let networks = part(|n| n.networks.clone());
+    let containers = part(|n| n.containers.clone());
+    let unavailable =
+        Memo::new(move |_| now.with(|n| n.as_ref().is_some_and(|n| n.containers_unavailable)));
+    let summary = Memo::new(move |_| {
+        now.with(|n| {
+            let n = n.as_ref()?;
+            let host = n.host?;
+            let cpus = n.host_cpus.map(|c| format!(" of {c}")).unwrap_or_default();
+            let cpu = host.cpu.map(|c| format!("{}{cpus}", format_cores(c)));
+            let mem = match (host.mem, host.mem_limit) {
+                (Some(used), Some(total)) => Some(format!(
+                    "{} of {} memory",
+                    format_bytes(used),
+                    format_bytes(total)
+                )),
+                _ => None,
+            };
+            // Only the figures there are: a missing one leaves no stray comma.
+            let parts: Vec<String> = [cpu, mem].into_iter().flatten().collect();
+            (!parts.is_empty()).then(|| parts.join(", "))
+        })
+    });
 
     view! {
         <header class="topbar">
             <h1 class="wordmark">"Host"</h1>
         </header>
-        <Show when=move || error.get().is_some()>
-            <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
-        </Show>
-        <Show when=move || now.get().is_some_and(|n| n.containers_unavailable)>
+        <ErrorNotice error />
+        <Show when=move || unavailable.get()>
             <p class="notice" role="alert">"The Docker daemon is not answering; container figures will return with it."</p>
         </Show>
-        <p class="verdict-count">{move || summary().unwrap_or_else(|| "Reading the host".to_owned())}</p>
+        <p class="verdict-count">{move || summary.get().unwrap_or_else(|| "Reading the host".to_owned())}</p>
 
         <RangePicker range />
         <Charts target=Signal::derive(Target::host) range measures=&[Measure::Cpu, Measure::Memory, Measure::Load] />
 
         <h2 class="group-heading">"Disks"</h2>
         <ul class="rows">
-            {move || now.get().map(|n| n.disks).unwrap_or_default().into_iter().map(|d| {
+            {move || disks.get().into_iter().map(|d| {
                 let (used, total) = (d.reading.mem.unwrap_or(0), d.reading.mem_limit.unwrap_or(0));
                 view! {
                     <li class="row row-usage">
-                        <span class="row-name">{d.key.clone()}</span>
+                        <span class="row-name">{d.key}</span>
                         <span class="row-detail">{format!("{} of {}", format_bytes(used), format_bytes(total))}</span>
                         <UsageBar used total />
                     </li>
@@ -89,33 +100,31 @@ pub fn Host() -> impl IntoView {
         </ul>
         <p class="entry-note">"More disks appear when mounted read-only under /host/disks."</p>
 
-        <Show when=move || now.get().is_some_and(|n| !n.networks.is_empty())>
+        <Show when=move || networks.with(|n| !n.is_empty())>
             <h2 class="group-heading">"Networks"</h2>
             <ul class="rows">
-                {move || now.get().map(|n| n.networks).unwrap_or_default().into_iter().map(|n| view! {
-                    <li class="row">
-                        <span class="row-link">
-                            <span class="row-bar" data-state="running"></span>
-                            <span class="row-name">{n.key.clone()}</span>
-                            <span class="row-detail">{format!(
-                                "in {}, out {}",
-                                format_rate(n.reading.net_rx.unwrap_or(0.0)),
-                                format_rate(n.reading.net_tx.unwrap_or(0.0)),
-                            )}</span>
-                        </span>
-                    </li>
+                {move || networks.get().into_iter().map(|n| view! {
+                    <Row
+                        state="running"
+                        name=n.key
+                        detail=format!(
+                            "in {}, out {}",
+                            format_rate(n.reading.net_rx.unwrap_or(0.0)),
+                            format_rate(n.reading.net_tx.unwrap_or(0.0)),
+                        )
+                    />
                 }).collect_view()}
             </ul>
         </Show>
 
         <h2 class="group-heading">"Using the most CPU"</h2>
-        {move || top_rows(now.get().map(|n| n.containers).unwrap_or_default(), |c| c.reading.cpu.unwrap_or(0.0), |c| format_cores(c.reading.cpu.unwrap_or(0.0)))}
+        {move || containers.with(|list| top_rows(list, |c| c.reading.cpu.unwrap_or(0.0), |c| format_cores(c.reading.cpu.unwrap_or(0.0))))}
         <h2 class="group-heading">"Using the most memory"</h2>
-        {move || top_rows(now.get().map(|n| n.containers).unwrap_or_default(), |c| {
+        {move || containers.with(|list| top_rows(list, |c| {
             #[allow(clippy::cast_precision_loss)]
             let m = c.reading.mem.unwrap_or(0) as f64;
             m
-        }, |c| format_bytes(c.reading.mem.unwrap_or(0)))}
+        }, |c| format_bytes(c.reading.mem.unwrap_or(0))))}
         <h2 class="group-heading">"Sizing"</h2>
         {move || match advice.get() {
             Load::Loading => view! { <p class="entry-note">"Reading advice"</p> }.into_any(),
@@ -132,24 +141,21 @@ pub fn Host() -> impl IntoView {
     }
 }
 
-fn top_rows(
-    mut list: Vec<Current>,
-    key: fn(&Current) -> f64,
-    label: fn(&Current) -> String,
-) -> impl IntoView {
-    list.sort_by(|a, b| key(b).total_cmp(&key(a)));
+fn top_rows(list: &[Current], key: fn(&Current) -> f64, label: fn(&Current) -> String) -> AnyView {
+    let mut top: Vec<&Current> = list.iter().collect();
+    top.sort_by(|a, b| key(b).total_cmp(&key(a)));
     view! {
         <ul class="rows rows-top">
-            {list.into_iter().take(TOP).map(|c| view! {
-                <li class="row">
-                    <a class="row-link" href=format!("/containers/{}/resources", c.key)>
-                        <span class="row-bar" data-state="running"></span>
-                        <span class="row-name">{c.key.clone()}</span>
-                        <span class="row-detail">{c.project.clone().unwrap_or_default()}</span>
-                        <span class="row-count">{label(&c)}</span>
-                    </a>
-                </li>
+            {top.into_iter().take(TOP).map(|c| view! {
+                <Row
+                    state="running"
+                    href=format!("/containers/{}/resources", c.key)
+                    name=c.key.clone()
+                    detail=c.project.clone().unwrap_or_default()
+                    count=label(c)
+                />
             }).collect_view()}
         </ul>
     }
+    .into_any()
 }

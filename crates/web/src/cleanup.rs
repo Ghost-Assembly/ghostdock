@@ -5,26 +5,32 @@
 //! space is never urgent, and an image deleted by mistake is only
 //! recoverable by downloading it again. Containers come first on the page
 //! because removing one can free the image beneath it.
+//!
+//! Sizes are in the binary units every other screen uses, so an image here
+//! and the memory on the Host screen are measured the same way. Docker
+//! prints powers of 1000, so its figures read a few percent larger.
 
 use leptos::prelude::*;
 use shared::cleanup::{CleanupPreview, CleanupResult, CleanupScope, StoppedContainer, UnusedImage};
+use shared::metrics::format_bytes;
 
 use crate::api;
 use crate::confirm::Confirm;
 use crate::load::Load;
 use crate::screen::Screen;
+use crate::ui::{ErrorNotice, Row};
 
 #[component]
 pub fn Cleanup() -> impl IntoView {
     let preview = RwSignal::new(Load::<CleanupPreview>::Loading);
-    let result = RwSignal::new(None::<(CleanupScope, CleanupResult)>);
+    let result = RwSignal::new(None::<String>);
     let error = RwSignal::new(None::<String>);
     let screen = Screen::new();
     let busy = RwSignal::new(false);
 
     let refresh = move || {
         screen.load(async move {
-            preview.set(Load::from(api::cleanup_preview(1).await));
+            preview.set(Load::from(api::cleanup_preview().await));
         });
     };
     Effect::new(move |_| refresh());
@@ -46,10 +52,10 @@ pub fn Cleanup() -> impl IntoView {
         busy.set(true);
         error.set(None);
         // Runs to the end on the server even if this screen is left.
-        screen.act(api::run_cleanup(1, scope), move |outcome| {
+        screen.act(api::run_cleanup(scope), move |outcome| {
             match outcome {
                 Ok(done) => {
-                    result.set(Some((scope, done)));
+                    result.set(Some(result_line(scope, &done)));
                     refresh();
                 }
                 Err(e) => error.set(Some(e.message)),
@@ -64,41 +70,10 @@ pub fn Cleanup() -> impl IntoView {
             <a class="topbar-link" href="/settings">"Back"</a>
         </header>
 
-        <Show when=move || error.get().is_some()>
-            <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
-        </Show>
+        <ErrorNotice error />
 
-        <Show when=move || result.get().is_some()>
-            <p class="entry-note">
-                {move || {
-                    result
-                        .get()
-                        .map(|(scope, done)| {
-                            let kept = if done.kept.is_empty() {
-                                String::new()
-                            } else {
-                                format!(
-                                    " {} could not be removed and were left alone.",
-                                    done.kept.len(),
-                                )
-                            };
-                            let n = done.removed.len();
-                            match scope {
-                                CleanupScope::Dangling | CleanupScope::AllUnused => format!(
-                                    "Removed {n} {}, reclaiming {}.{kept}",
-                                    if n == 1 { "image" } else { "images" },
-                                    human_size(done.reclaimed_bytes),
-                                ),
-                                CleanupScope::Leftover | CleanupScope::Standalone => format!(
-                                    "Removed {n} {}. Any images they used are listed below \
-                                     if nothing else needs them.{kept}",
-                                    if n == 1 { "container" } else { "containers" },
-                                ),
-                            }
-                        })
-                        .unwrap_or_default()
-                }}
-            </p>
+        <Show when=move || result.with(Option::is_some)>
+            <p class="entry-note">{move || result.get().unwrap_or_default()}</p>
         </Show>
 
         {move || match preview.get() {
@@ -142,7 +117,7 @@ pub fn Cleanup() -> impl IntoView {
                     <section class="verdict">
                         <p class="verdict-line">
                             {if dangling_bytes + unused_bytes > 0 {
-                                format!("{} can be reclaimed", human_size(dangling_bytes + unused_bytes))
+                                format!("{} can be reclaimed", format_bytes(dangling_bytes + unused_bytes))
                             } else {
                                 "Stopped containers can be removed".to_owned()
                             }}
@@ -193,7 +168,7 @@ pub fn Cleanup() -> impl IntoView {
                                 if busy.get() {
                                     "Removing".to_owned()
                                 } else {
-                                    format!("Remove untagged ({})", human_size(dangling_bytes))
+                                    format!("Remove untagged ({})", format_bytes(dangling_bytes))
                                 }
                             }}
                         </button>
@@ -208,7 +183,7 @@ pub fn Cleanup() -> impl IntoView {
                         <Confirm
                             label=label(format!(
                                 "Remove everything unused ({})",
-                                human_size(dangling_bytes + unused_bytes),
+                                format_bytes(dangling_bytes + unused_bytes),
                             ))
                             confirm="Remove them"
                             disabled=Signal::derive(move || busy.get())
@@ -226,6 +201,31 @@ pub fn Cleanup() -> impl IntoView {
     }
 }
 
+/// What a removal did, in a sentence.
+fn result_line(scope: CleanupScope, done: &CleanupResult) -> String {
+    let kept = if done.kept.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " {} could not be removed and were left alone.",
+            done.kept.len(),
+        )
+    };
+    let n = done.removed.len();
+    match scope {
+        CleanupScope::Dangling | CleanupScope::AllUnused => format!(
+            "Removed {n} {}, reclaiming {}.{kept}",
+            if n == 1 { "image" } else { "images" },
+            format_bytes(done.reclaimed_bytes),
+        ),
+        CleanupScope::Leftover | CleanupScope::Standalone => format!(
+            "Removed {n} {}. Any images they used are listed below \
+             if nothing else needs them.{kept}",
+            if n == 1 { "container" } else { "containers" },
+        ),
+    }
+}
+
 #[component]
 fn ContainerRows(containers: Vec<StoppedContainer>) -> impl IntoView {
     view! {
@@ -233,13 +233,7 @@ fn ContainerRows(containers: Vec<StoppedContainer>) -> impl IntoView {
             {containers
                 .into_iter()
                 .map(|c| view! {
-                    <li class="row">
-                        <span class="row-link">
-                            <span class="row-bar" data-state="stopped"></span>
-                            <span class="row-name">{c.name}</span>
-                            <span class="row-detail">{format!("{}, {}", c.image, c.status)}</span>
-                        </span>
-                    </li>
+                    <Row state="stopped" name=c.name detail=format!("{}, {}", c.image, c.status) />
                 })
                 .collect_view()}
         </ul>
@@ -252,37 +246,38 @@ fn ImageRows(images: Vec<UnusedImage>) -> impl IntoView {
         <ul class="rows">
             {images
                 .into_iter()
-                .map(|image| {
-                    let size = human_size(image.size_bytes);
-                    view! {
-                        <li class="row">
-                            <span class="row-link">
-                                <span class="row-bar" data-state="stopped"></span>
-                                <span class="row-name">{image.label()}</span>
-                                <span class="row-count">{size}</span>
-                            </span>
-                        </li>
-                    }
+                .map(|image| view! {
+                    <Row state="stopped" name=image.label() count=format_bytes(image.size_bytes) />
                 })
                 .collect_view()}
         </ul>
     }
 }
 
-/// Sizes as a person reads them.
-///
-/// Powers of 1000, matching what Docker itself prints, so the two agree.
-fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1000.0 && unit < UNITS.len() - 1 {
-        value /= 1000.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS.get(unit).copied().unwrap_or("TB"))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sizes_read_in_the_same_units_as_everywhere_else() {
+        let done = CleanupResult {
+            removed: vec!["sha256:1".to_owned()],
+            reclaimed_bytes: 1536,
+            kept: Vec::new(),
+        };
+        assert_eq!(
+            result_line(CleanupScope::Dangling, &done),
+            "Removed 1 image, reclaiming 1.5 KiB."
+        );
+        let done = CleanupResult {
+            removed: vec!["a".to_owned(), "b".to_owned()],
+            reclaimed_bytes: 0,
+            kept: vec!["c".to_owned()],
+        };
+        assert_eq!(
+            result_line(CleanupScope::Leftover, &done),
+            "Removed 2 containers. Any images they used are listed below if nothing else \
+             needs them. 1 could not be removed and were left alone."
+        );
     }
 }

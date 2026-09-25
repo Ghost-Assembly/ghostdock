@@ -1,11 +1,12 @@
 //! Registering a stack from a compose file.
 
 use leptos::prelude::*;
-use leptos_router::hooks::{use_navigate, use_params_map};
+use leptos_router::hooks::use_navigate;
 use shared::deployment::NewStack;
 
 use crate::api;
 use crate::screen::Screen;
+use crate::ui::{ErrorNotice, Field, route_id};
 
 const PLACEHOLDER: &str = "services:
   web:
@@ -21,12 +22,9 @@ const PLACEHOLDER: &str = "services:
 #[component]
 pub fn NewStackForm(#[prop(optional)] editing: bool) -> impl IntoView {
     let navigate = use_navigate();
-    let params = use_params_map();
-    let existing = Memo::new(move |_| {
-        editing
-            .then(|| params.get().get("id").and_then(|v| v.parse::<i64>().ok()))
-            .flatten()
-    });
+    let id = route_id();
+    // The stack being edited, if any; the route gives 0 for no id.
+    let existing = Memo::new(move |_| Some(id.get()).filter(|id| editing && *id > 0));
 
     let name = RwSignal::new(String::new());
     let yaml = RwSignal::new(String::new());
@@ -79,7 +77,7 @@ pub fn NewStackForm(#[prop(optional)] editing: bool) -> impl IntoView {
             async move {
                 match id {
                     Some(id) => api::update_stack(id, &new).await,
-                    None => api::create_stack(1, &new).await,
+                    None => api::create_stack(&new).await,
                 }
             },
             move |result| match result {
@@ -100,12 +98,9 @@ pub fn NewStackForm(#[prop(optional)] editing: bool) -> impl IntoView {
         </header>
 
         <form on:submit=submit>
-            <Show when=move || error.get().is_some()>
-                <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
-            </Show>
+            <ErrorNotice error />
 
-            <label class="field">
-                <span class="field-label">"Name"</span>
+            <Field label="Name">
                 <input
                     class="field-input"
                     type="text"
@@ -116,10 +111,9 @@ pub fn NewStackForm(#[prop(optional)] editing: bool) -> impl IntoView {
                         name.set(event_target_value(&ev));
                     }
                 />
-            </label>
+            </Field>
 
-            <label class="field">
-                <span class="field-label">"Compose file"</span>
+            <Field label="Compose file">
                 <textarea
                     class="field-input field-code"
                     rows="14"
@@ -133,7 +127,7 @@ pub fn NewStackForm(#[prop(optional)] editing: bool) -> impl IntoView {
                         yaml.set(event_target_value(&ev));
                     }
                 ></textarea>
-            </label>
+            </Field>
 
             <button class="button" type="submit" disabled=move || busy.get() || !loaded.get()>
                 {move || {

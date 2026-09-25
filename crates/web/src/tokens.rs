@@ -7,6 +7,7 @@ use crate::api;
 use crate::confirm::Confirm;
 use crate::load::Load;
 use crate::screen::Screen;
+use crate::ui::{ErrorNotice, Field, Row, toggle};
 
 #[component]
 pub fn Tokens() -> impl IntoView {
@@ -28,9 +29,7 @@ pub fn Tokens() -> impl IntoView {
             <a class="topbar-link" href="/settings">"Back"</a>
         </header>
 
-        <Show when=move || error.get().is_some()>
-            <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
-        </Show>
+        <ErrorNotice error />
 
         {move || revealed.get().map(|(name, secret)| {
             // The command to hand this token to Claude Code, for this very
@@ -133,20 +132,19 @@ fn TokenRows(
                         );
                     });
                     view! {
-                        <li class="row">
-                            <span class="row-link">
-                                <span class="row-bar" data-state="running"></span>
-                                <span class="row-name">{format!("{} ({}…)", token.name, token.prefix)}</span>
-                                <span class="row-detail">{format!("{granted}; {used}; {expiry}")}</span>
-                                <Confirm
-                                    label="Revoke"
-                                    confirm="Revoke it"
-                                    row=true
-                                    disabled=Signal::derive(move || revoking.get())
-                                    on_confirm=revoke
-                                />
-                            </span>
-                        </li>
+                        <Row
+                            state="running"
+                            name=format!("{} ({}…)", token.name, token.prefix)
+                            detail=format!("{granted}; {used}; {expiry}")
+                        >
+                            <Confirm
+                                label="Revoke"
+                                confirm="Revoke it"
+                                row=true
+                                disabled=Signal::derive(move || revoking.get())
+                                on_confirm=revoke
+                            />
+                        </Row>
                     }
                 })
                 .collect_view()}
@@ -196,11 +194,8 @@ fn NewTokenForm(
 
     view! {
         <form on:submit=submit>
-            <Show when=move || error.get().is_some()>
-                <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
-            </Show>
-            <label class="field">
-                <span class="field-label">"Name"</span>
+            <ErrorNotice error />
+            <Field label="Name">
                 <input
                     class="field-input"
                     type="text"
@@ -211,7 +206,7 @@ fn NewTokenForm(
                     prop:value=move || name.get()
                     on:input=move |ev| name.set(event_target_value(&ev))
                 />
-            </label>
+            </Field>
             <p class="field-label">"It may"</p>
             {Permission::AREAS
                 .iter()
@@ -225,14 +220,8 @@ fn NewTokenForm(
                                 <label class="check">
                                     <input
                                         type="checkbox"
-                                        prop:checked=move || chosen.get().contains(&p)
-                                        on:change=move |_| chosen.update(|list| {
-                                            if let Some(i) = list.iter().position(|x| *x == p) {
-                                                list.remove(i);
-                                            } else {
-                                                list.push(p);
-                                            }
-                                        })
+                                        prop:checked=move || chosen.with(|list| list.contains(&p))
+                                        on:change=move |_| chosen.update(|list| toggle(list, p))
                                     />
                                     <span class="check-name">{p.as_str()}</span>
                                     <span class="check-detail">{p.describe()}</span>
@@ -242,8 +231,7 @@ fn NewTokenForm(
                     </fieldset>
                 })
                 .collect_view()}
-            <label class="field">
-                <span class="field-label">"Expires"</span>
+            <Field label="Expires">
                 <select
                     class="field-input"
                     on:change=move |ev| expiry.set(event_target_value(&ev))
@@ -253,7 +241,7 @@ fn NewTokenForm(
                     <option value="365">"In a year"</option>
                     <option value="never">"Never"</option>
                 </select>
-            </label>
+            </Field>
             <button class="button button-quiet" type="submit" disabled=move || busy.get()>
                 {move || if busy.get() { "Creating" } else { "Create token" }}
             </button>

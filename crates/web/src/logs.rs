@@ -13,16 +13,12 @@ use shared::logs::{LogLine, Resume, Stream};
 use web_sys::{CloseEvent, MessageEvent};
 
 use crate::screen::Screen;
+use crate::ui::{ErrorNotice, Field, OutputLine, pinned, to_bottom};
 use crate::{api, socket};
 
 /// Most lines kept on screen. Following a chatty container for an hour would
 /// otherwise grow the page until the phone gives up.
 const MAX_LINES: usize = 5_000;
-
-/// How close to the bottom counts as "reading the latest", in pixels. Only
-/// then does a new line scroll the view; someone who scrolled up to read
-/// stays where they are.
-const PINNED_WITHIN: i32 = 48;
 
 /// Most lines in the page at once. The rest stay in memory, searchable and
 /// downloadable; laying out thousands of rows on every new line is what
@@ -44,7 +40,8 @@ struct Row {
 fn follow_url(container: &str, since: Option<i64>) -> String {
     let since = since.map_or_else(String::new, |t| format!("?since={t}"));
     socket::url(&format!(
-        "/api/v1/hosts/1/containers/{}/logs/socket{since}",
+        "/api/v1/hosts/{}/containers/{}/logs/socket{since}",
+        api::HOST,
         api::component(container)
     ))
 }
@@ -109,7 +106,7 @@ pub fn ContainerLogs() -> impl IntoView {
             return;
         }
         screen.load(async move {
-            let answer = api::container_logs(1, &container).await;
+            let answer = api::container_logs(&container).await;
             if latest.try_get_value() != Some(mine) {
                 return;
             }
@@ -157,16 +154,10 @@ pub fn ContainerLogs() -> impl IntoView {
                 screen.next_frame(move || {
                     flush_scheduled.set_value(false);
                     let batch = std::mem::take(&mut *pending.write_value());
-                    let pinned = pane.get_untracked().is_none_or(|el| {
-                        el.scroll_top() + el.client_height() >= el.scroll_height() - PINNED_WITHIN
-                    });
+                    let at_bottom = pinned(pane);
                     push(batch);
-                    if pinned {
-                        screen.next_frame(move || {
-                            if let Some(el) = pane.get_untracked() {
-                                el.set_scroll_top(el.scroll_height());
-                            }
-                        });
+                    if at_bottom {
+                        screen.next_frame(move || to_bottom(pane));
                     }
                 });
             })
@@ -222,12 +213,9 @@ pub fn ContainerLogs() -> impl IntoView {
             <a class="topbar-link" href="/">"Back"</a>
         </header>
 
-        <Show when=move || error.get().is_some()>
-            <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
-        </Show>
+        <ErrorNotice error />
 
-        <label class="field">
-            <span class="field-label">"Search"</span>
+        <Field label="Search">
             <input
                 class="field-input"
                 type="search"
@@ -237,7 +225,7 @@ pub fn ContainerLogs() -> impl IntoView {
                 prop:value=move || filter.get()
                 on:input=move |ev| filter.set(event_target_value(&ev))
             />
-        </label>
+        </Field>
 
         <div class="actions actions-pair">
             <button
@@ -260,7 +248,7 @@ pub fn ContainerLogs() -> impl IntoView {
         // A plain link, so the browser does the saving.
         <a
             class="button button-quiet"
-            href=move || format!("/api/v1/hosts/1/containers/{}/logs.txt", id.get())
+            href=move || format!("/api/v1/hosts/{}/containers/{}/logs.txt", api::HOST, id.get())
             download=move || format!("{}.log", shared::short(&id.get(), 12))
         >
             "Download"
@@ -298,13 +286,8 @@ pub fn ContainerLogs() -> impl IntoView {
             <pre class="log log-tall" node_ref=pane>
                 <For each=move || shown.get() key=|seq| *seq let:seq>
                     {
-                        row_for(seq).map(|line| {
-                            let class = if line.stream == Stream::Stderr {
-                                "log-line log-stderr"
-                            } else {
-                                "log-line"
-                            };
-                            view! { <div class=class>{line.text.clone()}"\n"</div> }
+                        row_for(seq).map(|line| view! {
+                            <OutputLine text=line.text.clone() stderr=line.stream == Stream::Stderr />
                         })
                     }
                 </For>

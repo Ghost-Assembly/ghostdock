@@ -6,13 +6,13 @@
 //! presenting a form that would silently lose every secret not retyped.
 
 use leptos::prelude::*;
-use leptos_router::hooks::use_params_map;
 use shared::source::EnvValue;
 
 use crate::api;
 use crate::confirm::Confirm;
 use crate::load::Load;
 use crate::screen::Screen;
+use crate::ui::{ErrorNotice, Field, Row, route_id};
 
 /// A name the server will take: letters, digits and underscores, not
 /// starting with a digit. Checked here too, so a typo is explained before
@@ -27,14 +27,7 @@ fn valid_name(name: &str) -> bool {
 
 #[component]
 pub fn StackEnvironment() -> impl IntoView {
-    let params = use_params_map();
-    let id = Memo::new(move |_| {
-        params
-            .get()
-            .get("id")
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or_default()
-    });
+    let id = route_id();
 
     let keys = RwSignal::new(Load::<Vec<String>>::Loading);
     let error = RwSignal::new(None::<String>);
@@ -119,9 +112,7 @@ pub fn StackEnvironment() -> impl IntoView {
             <a class="topbar-link" href=move || format!("/stacks/{}", id.get())>"Back"</a>
         </header>
 
-        <Show when=move || error.get().is_some()>
-            <p class="notice" role="alert">{move || error.get().unwrap_or_default()}</p>
-        </Show>
+        <ErrorNotice error />
 
         {move || match keys.get() {
             Load::Loading => view! { <p class="state-note">"Loading"</p> }.into_any(),
@@ -145,20 +136,15 @@ pub fn StackEnvironment() -> impl IntoView {
                         .into_iter()
                         .map(|name| {
                             view! {
-                                <li class="row">
-                                    <span class="row-link">
-                                        <span class="row-bar" data-state="running"></span>
-                                        <span class="row-name">{name.clone()}</span>
-                                        <span class="row-detail">"set"</span>
-                                        <Confirm
-                                            label="Remove"
-                                            confirm="Remove it"
-                                            row=true
-                                            disabled=Signal::derive(move || removing.get())
-                                            on_confirm=remove(name)
-                                        />
-                                    </span>
-                                </li>
+                                <Row state="running" name=name.clone() detail="set">
+                                    <Confirm
+                                        label="Remove"
+                                        confirm="Remove it"
+                                        row=true
+                                        disabled=Signal::derive(move || removing.get())
+                                        on_confirm=remove(name)
+                                    />
+                                </Row>
                             }
                         })
                         .collect_view()}
@@ -169,8 +155,7 @@ pub fn StackEnvironment() -> impl IntoView {
 
         <h2 class="group-heading">"Add or replace"</h2>
         <form on:submit=submit>
-            <label class="field">
-                <span class="field-label">"Name"</span>
+            <Field label="Name">
                 <input
                     class="field-input"
                     type="text"
@@ -181,9 +166,8 @@ pub fn StackEnvironment() -> impl IntoView {
                     prop:value=move || key.get()
                     on:input=move |ev| key.set(event_target_value(&ev))
                 />
-            </label>
-            <label class="field">
-                <span class="field-label">"Value"</span>
+            </Field>
+            <Field label="Value">
                 <input
                     class="field-input"
                     type="password"
@@ -191,7 +175,7 @@ pub fn StackEnvironment() -> impl IntoView {
                     prop:value=move || value.get()
                     on:input=move |ev| value.set(event_target_value(&ev))
                 />
-            </label>
+            </Field>
             <button class="button button-quiet" type="submit" disabled=move || busy.get()>
                 {move || if busy.get() { "Saving" } else { "Save variable" }}
             </button>
