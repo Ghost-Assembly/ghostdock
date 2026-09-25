@@ -8,7 +8,9 @@ use shared::auth::User;
 
 use crate::accounts::Accounts;
 use crate::activity::Activity;
+use crate::alerts::AlertSettings;
 use crate::api;
+use crate::checks::{CheckDetail, NewCheck};
 use crate::cleanup::Cleanup;
 use crate::console::Console;
 use crate::deployment::DeploymentView;
@@ -146,11 +148,14 @@ fn Shell(user: User, session: RwSignal<Session>) -> impl IntoView {
                     <Route path=path!("/updates") view=Updates />
                     <Route path=path!("/logs") view=LogsAcross />
                     <Route path=path!("/host") view=Host />
+                    <Route path=path!("/checks/new") view=NewCheck />
+                    <Route path=path!("/checks/:id") view=CheckDetail />
                     <Route path=path!("/cleanup") view=Cleanup />
                     <Route path=path!("/activity") view=Activity />
                     <Route path=path!("/accounts") view=Accounts />
                     <Route path=path!("/tokens") view=Tokens />
                     <Route path=path!("/settings/reference") view=ApiReference />
+                    <Route path=path!("/settings/alerts") view=AlertSettings />
                     <Route path=path!("/containers/:id/logs") view=ContainerLogs />
                     <Route path=path!("/containers/:id/shell") view=Console />
                     <Route path=path!("/containers/:name/resources") view=ContainerResources />
@@ -204,12 +209,12 @@ fn Nav() -> impl IntoView {
             {item("/", "Stacks", "layers", &["/stacks", "/containers", "/deployments"])}
             {item("/updates", "Updates", "refresh-cw", &[])}
             {item("/logs", "Logs", "scroll-text", &[])}
-            {item("/host", "Host", "server", &[])}
+            {item("/host", "Host", "server", &["/checks"])}
             {item(
                 "/settings",
                 "Settings",
                 "settings",
-                &["/sources", "/repos", "/cleanup", "/activity", "/accounts", "/tokens"],
+                &["/settings/", "/sources", "/repos", "/cleanup", "/activity", "/accounts", "/tokens"],
             )}
         </nav>
     }

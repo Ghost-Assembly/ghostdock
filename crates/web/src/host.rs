@@ -9,6 +9,7 @@ use shared::metrics::{
 
 use crate::api;
 use crate::charts::{Measure, UsageBar, fullness};
+use crate::checks::CheckList;
 use crate::events::use_events;
 use crate::load::Load;
 use crate::resources::{Charts, RangePicker, SizingRows};
@@ -82,6 +83,8 @@ pub fn Host() -> impl IntoView {
 
         <RangePicker range />
         <Charts target=Signal::derive(Target::host) range measures=&[Measure::Cpu, Measure::Memory, Measure::Load] />
+
+        <CheckList />
 
         <h2 class="group-heading">"Disks"</h2>
         <ul class="rows">

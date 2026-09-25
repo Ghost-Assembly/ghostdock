@@ -103,6 +103,7 @@ test_deploy() { start_fresh deploy; run deploy; }
 test_accounts() { start_fresh accounts; run accounts; }
 test_tokens() { start_fresh tokens; run tokens; }
 test_stall() { start_fresh stall; run stall; }
+test_checks() { start_fresh checks; run checks; }
 test_offline() { start_fresh offline; run offline; }
 
 test_git() {
@@ -285,6 +286,18 @@ test_a11y() {
   # Every main screen, with a stack running so each has something to show.
   start_fresh a11y
   deploy_fixture Ticker "$TICKER"
+  # An uptime check and an alert channel, so their screens have rows.
+  local jar
+  jar="$(api_session)"
+  curl -fsS -b "$jar" -H 'content-type: application/json' \
+    -d "{\"name\":\"GhostDock\",\"kind\":\"http\",\"target\":\"$URL/api/v1/health\",\"stack_id\":1}" \
+    "$URL/api/v1/hosts/1/checks" >/dev/null
+  curl -fsS -b "$jar" -H 'content-type: application/json' \
+    -d '{"name":"ops","kind":"webhook","url":"http://127.0.0.1:9/hook"}' \
+    "$URL/api/v1/alerts/channels" >/dev/null
+  curl -fsS -b "$jar" -H 'content-type: application/json' \
+    -d '{"subject":"host","metric":"cpu","above_pct":90,"for_min":5}' \
+    "$URL/api/v1/alerts/rules" >/dev/null
   sleep 3
   run a11y
 }
@@ -299,7 +312,7 @@ test_host() {
 
 # With no arguments, everything; otherwise just the named tests, in order.
 TESTS=("$@")
-[[ ${#TESTS[@]} -eq 0 ]] && TESTS=(smoke perf deploy accounts tokens offline stall git discover shell live logs multilogs icons cleanup roam tabs jank layout host a11y mcp)
+[[ ${#TESTS[@]} -eq 0 ]] && TESTS=(smoke perf deploy accounts tokens offline stall git discover shell live logs multilogs icons checks cleanup roam tabs jank layout host a11y mcp)
 for t in "${TESTS[@]}"; do
   "test_$t"
 done

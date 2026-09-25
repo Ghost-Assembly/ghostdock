@@ -178,6 +178,76 @@ pub fn Field(label: &'static str, children: Children) -> impl IntoView {
     }
 }
 
+/// A labelled line of text to type. One component for every such field, so
+/// its code is in the bundle once.
+#[component]
+pub fn TextField(
+    label: &'static str,
+    value: RwSignal<String>,
+    #[prop(optional)] placeholder: &'static str,
+    /// Typed once and never shown again: a URL with a token in it, a token.
+    #[prop(optional)]
+    secret: bool,
+) -> impl IntoView {
+    view! {
+        <Field label>
+            <input
+                class="field-input"
+                type=if secret { "password" } else { "text" }
+                autocomplete="off"
+                autocapitalize="none"
+                spellcheck="false"
+                placeholder=placeholder
+                prop:value=move || value.get()
+                on:input=move |ev| value.set(event_target_value(&ev))
+            />
+        </Field>
+    }
+}
+
+/// A labelled choice of one from `options`, each its value and its words.
+#[component]
+pub fn Pick(
+    label: &'static str,
+    #[prop(into)] options: Signal<Vec<(String, String)>>,
+    value: RwSignal<String>,
+) -> impl IntoView {
+    view! {
+        <Field label>
+            <select class="field-input" on:change=move |ev| value.set(event_target_value(&ev))>
+                // Each option says whether it is the chosen one: when the
+                // list is read again its options are new, and a select left
+                // to itself would fall back to the first.
+                {move || options.get().into_iter().map(|(v, words)| {
+                    let mine = v.clone();
+                    view! { <option value=v selected=move || value.with(|c| *c == mine)>{words}</option> }
+                }).collect_view()}
+            </select>
+        </Field>
+    }
+}
+
+/// `(value, words)` pairs for [`Pick`], from literals.
+#[must_use]
+pub fn options(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+    pairs
+        .iter()
+        .map(|(v, w)| ((*v).to_owned(), (*w).to_owned()))
+        .collect()
+}
+
+/// A labelled yes or no.
+#[component]
+pub fn Tick(name: &'static str, detail: &'static str, value: RwSignal<bool>) -> impl IntoView {
+    view! {
+        <label class="check">
+            <input type="checkbox" prop:checked=move || value.get() on:change=move |_| value.update(|v| *v = !*v) />
+            <span class="check-name">{name}</span>
+            <span class="check-detail">{detail}</span>
+        </label>
+    }
+}
+
 /// A secondary way in from a row: where, what it is called, and its icon.
 pub type Aside = (String, &'static str, &'static str);
 

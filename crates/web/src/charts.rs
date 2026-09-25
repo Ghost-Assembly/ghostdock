@@ -23,6 +23,12 @@ pub enum Measure {
     DiskRead,
     DiskWrite,
     Load,
+    /// An uptime check's latency in ms, carried in a reading's CPU fields:
+    /// a chart draws any average and peak the same way.
+    Latency,
+    /// An uptime check's share of runs that succeeded, in percent, carried
+    /// in a reading's load field.
+    Uptime,
 }
 
 impl Measure {
@@ -36,6 +42,8 @@ impl Measure {
             Self::DiskRead => "Disk reads",
             Self::DiskWrite => "Disk writes",
             Self::Load => "Load",
+            Self::Latency => "Latency",
+            Self::Uptime => "Uptime",
         }
     }
 
@@ -45,13 +53,13 @@ impl Measure {
     pub fn values(self, r: &Reading) -> (Option<f64>, Option<f64>, Option<f64>) {
         let b = |v: Option<u64>| v.map(|v| v as f64);
         match self {
-            Self::Cpu => (r.cpu, r.cpu_max, None),
+            Self::Cpu | Self::Latency => (r.cpu, r.cpu_max, None),
             Self::Memory => (b(r.mem), b(r.mem_max), b(r.mem_limit)),
             Self::NetIn => (r.net_rx, None, None),
             Self::NetOut => (r.net_tx, None, None),
             Self::DiskRead => (r.io_read, None, None),
             Self::DiskWrite => (r.io_write, None, None),
-            Self::Load => (r.load, None, None),
+            Self::Load | Self::Uptime => (r.load, None, None),
         }
     }
 
@@ -60,7 +68,8 @@ impl Measure {
     #[must_use]
     pub fn ceiling(self, v: f64) -> f64 {
         match self {
-            Self::Cpu | Self::Load => nice_ceiling(v),
+            Self::Cpu | Self::Load | Self::Latency => nice_ceiling(v),
+            Self::Uptime => 100.0,
             _ => {
                 let mut unit = 1.0;
                 while v.is_finite() && v / unit >= 1024.0 {
@@ -84,6 +93,8 @@ impl Measure {
             Self::Cpu => format_cores(v),
             Self::Memory => format_bytes(v.max(0.0).round() as u64),
             Self::Load => format!("{v:.2}"),
+            Self::Latency => format!("{v:.0} ms"),
+            Self::Uptime => format!("{v:.1}%"),
             _ => format_rate(v),
         }
     }
@@ -302,7 +313,13 @@ pub fn Chart(
         points.with(|pts| match reading_at(pts, picked) {
             Some(r) => {
                 let (avg, peak, limit) = measure.values(r);
-                let value = avg.map_or_else(|| "nothing running".to_owned(), |v| measure.format(v));
+                // A check that failed has no latency; a stopped container no use.
+                let none = match measure {
+                    Measure::Latency => "no answer",
+                    Measure::Uptime => "no runs",
+                    _ => "nothing running",
+                };
+                let value = avg.map_or_else(|| none.to_owned(), |v| measure.format(v));
                 let peak = peak
                     .filter(|p| avg.is_some_and(|a| *p > a * 1.05))
                     .map(|p| format!(", peak {}", measure.format(p)))

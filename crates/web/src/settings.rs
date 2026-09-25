@@ -124,6 +124,16 @@ pub fn Settings(user: User, session: RwSignal<Session>) -> impl IntoView {
             />
         </ul>
 
+        <h2 class="group-heading">"Monitoring"</h2>
+        <ul class="rows">
+            <Row
+                state="none"
+                href="/settings/alerts"
+                name="Alerts"
+                detail="Where alerts go, and rules for CPU, memory and disk"
+            />
+        </ul>
+
         <h2 class="group-heading">"Maintenance"</h2>
         <ul class="rows">
             <Row

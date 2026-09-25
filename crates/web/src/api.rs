@@ -421,6 +421,66 @@ pub async fn sizing() -> Result<Vec<Recommendation>> {
     get(&format!("/hosts/{HOST}/sizing")).await
 }
 
+// ---- uptime checks and alerts -----------------------------------------------
+
+pub async fn checks() -> Result<Vec<shared::checks::CheckSummary>> {
+    get(&format!("/hosts/{HOST}/checks")).await
+}
+
+pub async fn check(id: i64) -> Result<shared::checks::CheckSummary> {
+    get(&format!("/checks/{id}")).await
+}
+
+pub async fn check_history(id: i64, range: Range) -> Result<shared::checks::CheckHistory> {
+    get(&format!("/checks/{id}/history?range={}", range.as_str())).await
+}
+
+/// Adds a check, or with an id changes that one.
+pub async fn save_check(
+    id: Option<i64>,
+    input: &shared::checks::CheckInput,
+) -> Result<shared::checks::CheckSummary> {
+    match id {
+        Some(id) => put(&format!("/checks/{id}"), input).await,
+        None => post(&format!("/hosts/{HOST}/checks"), input).await,
+    }
+}
+
+pub async fn delete_check(id: i64) -> Result<()> {
+    delete(&format!("/checks/{id}")).await
+}
+
+pub async fn channels() -> Result<Vec<shared::alerts::AlertChannel>> {
+    get("/alerts/channels").await
+}
+
+pub async fn add_channel(
+    new: &shared::alerts::NewAlertChannel,
+) -> Result<shared::alerts::AlertChannel> {
+    post("/alerts/channels", new).await
+}
+
+pub async fn test_channel(id: i64) -> Result<shared::alerts::AlertDelivery> {
+    post_empty(&format!("/alerts/channels/{id}/test")).await
+}
+
+pub async fn rules() -> Result<Vec<shared::alerts::AlertRule>> {
+    get("/alerts/rules").await
+}
+
+pub async fn add_rule(new: &shared::alerts::NewAlertRule) -> Result<shared::alerts::AlertRule> {
+    post("/alerts/rules", new).await
+}
+
+pub async fn deliveries() -> Result<Vec<shared::alerts::AlertDelivery>> {
+    get("/alerts/deliveries").await
+}
+
+/// Removes an alert channel or rule: `what` is `channels` or `rules`.
+pub async fn remove_alert(what: &str, id: i64) -> Result<()> {
+    delete(&format!("/alerts/{what}/{id}")).await
+}
+
 /// Percent-encodes everything but unreserved characters, for a query value
 /// or a path segment. Subjects carry names and paths, which may hold
 /// anything a directory name can; a path segment holding `/`, `?` or `#`

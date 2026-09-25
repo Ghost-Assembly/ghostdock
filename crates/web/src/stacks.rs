@@ -123,7 +123,9 @@ pub fn Stacks() -> impl IntoView {
     if let Some(events) = use_events() {
         let reload = screen.coalesce(Duration::from_millis(400), refresh);
         events.on(move |event| match event {
-            ServerEvent::ContainerChanged { .. } | ServerEvent::DeploymentFinished { .. } => {
+            ServerEvent::ContainerChanged { .. }
+            | ServerEvent::DeploymentFinished { .. }
+            | ServerEvent::CheckChanged { .. } => {
                 reload();
             }
             ServerEvent::Metrics { now } => figures.set(Some((**now).clone())),
@@ -250,6 +252,8 @@ struct RowData {
     count: String,
     state: &'static str,
     icon: Option<String>,
+    /// Its uptime checks that are down, by name.
+    down: Option<String>,
 }
 
 impl RowData {
@@ -271,6 +275,11 @@ impl RowData {
             count: format!("{}/{}", stack.running_count, stack.total_count),
             state: state_key(stack.state),
             icon: stack.icon.clone(),
+            down: stack
+                .managed
+                .as_ref()
+                .filter(|m| !m.checks_down.is_empty())
+                .map(|m| m.checks_down.join(", ")),
         }
     }
 }
@@ -327,6 +336,14 @@ fn StackRows(rows: Memo<Vec<RowData>>, figures: RwSignal<Option<Now>>) -> impl I
                     count=row.count
                     brand=row.icon
                 >
+                    // Its uptime checks are its own state: marked and said,
+                    // beside the containers' own.
+                    {row.down.map(|names| view! {
+                        <span class="row-alert">
+                            <span class="state-mark" data-state="unhealthy"></span>
+                            {format!("down: {names}")}
+                        </span>
+                    })}
                     <RowFigures figures project=row.project />
                 </Row>
             </For>
