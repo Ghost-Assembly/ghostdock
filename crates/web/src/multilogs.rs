@@ -40,7 +40,7 @@ const SEARCH_AFTER: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// Most lines added in one frame. A burst, or the lines held while paused,
 /// arrive over several frames instead of stalling one.
-const BATCH: usize = 250;
+const BATCH: usize = 100;
 
 /// Most lines held while paused; past it the oldest are let go.
 const MAX_HELD: usize = 5_000;
