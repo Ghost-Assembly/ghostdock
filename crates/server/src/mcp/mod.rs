@@ -25,6 +25,7 @@ use axum::routing::post;
 use serde_json::{Value, json};
 use shared::token::Permission;
 
+use crate::auth::{Principal, Via};
 use crate::state::AppState;
 
 /// Newest first. The first is offered to a client asking for one it does not
@@ -70,6 +71,9 @@ async fn not_offered() -> Response {
 pub(crate) struct Caller {
     pub bearer: String,
     pub permissions: Vec<Permission>,
+    /// Who the token is, as the API sees it: for ending a wait when the
+    /// token is revoked.
+    pub principal: Principal,
 }
 
 async fn handle(State(mcp): State<Mcp>, headers: HeaderMap, body: Bytes) -> Response {
@@ -177,15 +181,17 @@ async fn handle(State(mcp): State<Mcp>, headers: HeaderMap, body: Bytes) -> Resp
     reply(StatusCode::OK, body)
 }
 
+/// A token, and only a token: a browser's session never reaches MCP.
 async fn authenticate(state: &AppState, authorization: Option<&str>) -> Option<Caller> {
-    let secret = authorization?
-        .strip_prefix("Bearer ")
-        .or_else(|| authorization?.strip_prefix("bearer "))?
-        .trim();
-    let (token, _) = state.store.token_authenticate(secret).await.ok()??;
+    let secret = crate::auth::bearer(authorization?)?;
+    let principal = Principal::from_token(state, secret).await.ok()?;
+    let Via::Token { permissions, .. } = &principal.via else {
+        return None;
+    };
     Some(Caller {
         bearer: secret.to_owned(),
-        permissions: token.permissions,
+        permissions: permissions.clone(),
+        principal,
     })
 }
 
@@ -220,7 +226,15 @@ async fn call(mcp: &Mcp, caller: &Caller, params: &Value) -> Result<Value, (i64,
         .cloned()
         .unwrap_or_else(|| json!({}));
 
-    let api = tools::Api::new(mcp.api.clone(), caller.bearer.clone());
+    let api = tools::Api::new(
+        mcp.api.clone(),
+        caller.bearer.clone(),
+        tools::Wake {
+            runner: mcp.state.runner.clone(),
+            revocations: mcp.state.revocations.clone(),
+            principal: caller.principal.clone(),
+        },
+    );
     Ok(match tools::run(tool, &api, &arguments).await {
         // Text reads best as itself: logs, a compose file. Anything with
         // shape also goes as structuredContent, which clients prefer.
