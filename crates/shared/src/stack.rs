@@ -21,6 +21,9 @@ pub struct Managed {
     pub source_kind: SourceKind,
     /// True while an operation is in flight, so the UI can say so.
     pub busy: bool,
+    /// The names of its uptime checks that are down now.
+    #[serde(default)]
+    pub checks_down: Vec<String>,
 }
 
 /// Aggregate state of a stack's containers.

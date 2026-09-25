@@ -38,6 +38,9 @@ pub enum ServerEvent {
     /// Boxed: far larger than the other events, which would otherwise all
     /// be as large as it. The JSON is the same.
     Metrics { now: Box<crate::metrics::Now> },
+    /// An uptime check changed state: came up, went down, degraded, or
+    /// was paused.
+    CheckChanged { check: crate::checks::CheckStatus },
 }
 
 /// One container event, reduced to what a board needs to decide whether to
@@ -66,6 +69,7 @@ impl ServerEvent {
         "deployment_finished",
         "container_changed",
         "metrics",
+        "check_changed",
     ];
 
     /// SSE event name, so a client can listen selectively.
@@ -77,6 +81,7 @@ impl ServerEvent {
             Self::DeploymentFinished { .. } => "deployment_finished",
             Self::ContainerChanged { .. } => "container_changed",
             Self::Metrics { .. } => "metrics",
+            Self::CheckChanged { .. } => "check_changed",
         }
     }
 }
@@ -113,6 +118,17 @@ mod tests {
             },
             ServerEvent::Metrics {
                 now: Box::default(),
+            },
+            ServerEvent::CheckChanged {
+                check: crate::checks::CheckStatus {
+                    check_id: 1,
+                    state: crate::checks::CheckState::Down,
+                    since: None,
+                    last_at: None,
+                    latency_ms: None,
+                    message: None,
+                    tls_days_left: None,
+                },
             },
         ] {
             assert!(
