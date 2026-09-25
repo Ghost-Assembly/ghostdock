@@ -1,0 +1,20 @@
+[package]
+name = "probe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+# Reaching services from GhostDock's own network. The HTTP stack is the one
+# `registry` already uses, so nothing new enters the tree.
+[dependencies]
+reqwest = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+axum = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
