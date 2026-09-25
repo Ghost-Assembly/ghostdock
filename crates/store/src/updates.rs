@@ -51,14 +51,6 @@ impl Store {
         Ok(row.is_some_and(|(value,)| value != 0))
     }
 
-    /// Stacks that apply updates without being asked.
-    pub async fn stacks_with_auto_apply(&self) -> Result<Vec<i64>> {
-        let rows = sqlx::query_as::<_, (i64,)>("SELECT id FROM stacks WHERE auto_apply != 0")
-            .fetch_all(self.pool())
-            .await?;
-        Ok(rows.into_iter().map(|(id,)| id).collect())
-    }
-
     /// Records the outcome of a check, replacing the previous one.
     ///
     /// Wholesale, because a service removed from the compose file should stop

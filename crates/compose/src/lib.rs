@@ -14,7 +14,7 @@ pub mod slug;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -59,16 +59,6 @@ pub struct Outcome {
     pub timed_out: bool,
     /// Merged stdout and stderr, in the order it was produced.
     pub output: String,
-    pub duration: Duration,
-}
-
-impl Outcome {
-    /// The last few lines, for a summary where the whole log is too much.
-    #[must_use]
-    pub fn tail(&self, lines: usize) -> String {
-        let all: Vec<&str> = self.output.lines().collect();
-        all[all.len().saturating_sub(lines)..].join("\n")
-    }
 }
 
 /// Runs `docker compose` against materialised project directories.
@@ -176,8 +166,6 @@ impl Compose {
         timeout: Duration,
         sink: Option<mpsc::UnboundedSender<String>>,
     ) -> Result<Outcome> {
-        let started = Instant::now();
-
         let mut child = Command::new(&self.bin)
             .args(argv)
             .stdin(Stdio::null())
@@ -249,7 +237,6 @@ impl Compose {
             exit_code: status.and_then(|s| s.code()),
             timed_out,
             output,
-            duration: started.elapsed(),
         })
     }
 }

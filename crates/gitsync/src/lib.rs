@@ -226,7 +226,6 @@ impl Git {
         Ok(self.run(&command::head(dir), None).await?.trim().to_owned())
     }
 
-    /// Reads a file from a synced working tree.
     /// Paths of every file the checkout tracks, relative to its root.
     pub async fn list_files(&self, dir: &Path) -> Result<Vec<String>> {
         let out = self.run(&command::ls_files(dir), None).await?;
@@ -235,20 +234,6 @@ impl Git {
             .filter(|p| !p.is_empty())
             .map(str::to_owned)
             .collect())
-    }
-
-    pub async fn read_file(&self, dir: &Path, relative: &str) -> Result<String> {
-        let path = resolve_in_repo(dir, relative)?;
-        match tokio::fs::read_to_string(&path).await {
-            Ok(contents) => Ok(contents),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Err(Error::NotInRepo(relative.to_owned()))
-            }
-            Err(source) => Err(Error::Io {
-                context: format!("reading {relative}"),
-                source,
-            }),
-        }
     }
 
     async fn run(&self, argv: &[String], credential: Option<&Credential>) -> Result<String> {

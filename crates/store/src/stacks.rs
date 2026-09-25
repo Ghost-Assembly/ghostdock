@@ -224,14 +224,6 @@ impl Store {
         Ok(row.map(to_stack))
     }
 
-    pub async fn stack_by_slug(&self, slug: &str) -> Result<Option<RegisteredStack>> {
-        let row = sqlx::query_as::<_, StackTuple>(stack_select!("WHERE s.slug = ?1"))
-            .bind(slug)
-            .fetch_optional(self.pool())
-            .await?;
-        Ok(row.map(to_stack))
-    }
-
     /// The stack's compose file, as stored.
     pub async fn stack_compose_yaml(&self, id: i64) -> Result<Option<String>> {
         let row = sqlx::query_as::<_, (String,)>("SELECT compose_yaml FROM stacks WHERE id = ?1")

@@ -336,40 +336,6 @@ impl MetricsStore {
         Ok(rows.into_iter().map(from_row).collect())
     }
 
-    pub async fn read_stack(
-        &self,
-        project: &str,
-        resolution: Resolution,
-        from: i64,
-        to: i64,
-    ) -> Result<Vec<Reading>> {
-        let sql = match resolution {
-            Resolution::Quarter => {
-                "SELECT s.t, SUM(s.cpu), SUM(s.cpu_max), SUM(s.mem), SUM(s.mem_max),
-                    CASE WHEN COUNT(s.mem_limit) = COUNT(*) THEN SUM(s.mem_limit) END,
-                    SUM(s.net_rx), SUM(s.net_tx), SUM(s.io_read), SUM(s.io_write), NULL, NULL
-                 FROM samples_15m s JOIN subjects j ON j.id = s.subject_id
-                 WHERE j.kind = 'container' AND j.project = ?1 AND s.t >= ?2 AND s.t < ?3
-                 GROUP BY s.t ORDER BY s.t"
-            }
-            _ => {
-                "SELECT s.t, SUM(s.cpu), SUM(s.cpu_max), SUM(s.mem), SUM(s.mem_max),
-                    CASE WHEN COUNT(s.mem_limit) = COUNT(*) THEN SUM(s.mem_limit) END,
-                    SUM(s.net_rx), SUM(s.net_tx), SUM(s.io_read), SUM(s.io_write), NULL, NULL
-                 FROM samples_1m s JOIN subjects j ON j.id = s.subject_id
-                 WHERE j.kind = 'container' AND j.project = ?1 AND s.t >= ?2 AND s.t < ?3
-                 GROUP BY s.t ORDER BY s.t"
-            }
-        };
-        let rows = sqlx::query_as::<_, Row>(sql)
-            .bind(project)
-            .bind(from)
-            .bind(to)
-            .fetch_all(&self.pool)
-            .await?;
-        Ok(rows.into_iter().map(from_row).collect())
-    }
-
     /// A chart's worth of `[from, to)`: at most `points` buckets of time,
     /// each the average of its rows' averages and the maximum of their
     /// peaks, so a spike inside a bucket survives. SQLite does the folding;

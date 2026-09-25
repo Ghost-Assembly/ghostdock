@@ -169,11 +169,13 @@ async fn a_stack_is_its_containers_summed_minute_by_minute() {
     ])
     .await
     .unwrap();
+    // Enough points for a bucket a minute: nothing folded but the stack.
     let s = m
-        .read_stack("blog", Resolution::Minute, 0, 1000)
+        .read_stack_series("blog", Resolution::Minute, 0, 1000, 1000)
         .await
         .unwrap();
     assert_eq!(s.len(), 1);
+    assert_eq!(s[0].t, 60);
     assert!((s[0].cpu.unwrap() - 0.75).abs() < 1e-9);
     assert_eq!(s[0].mem, Some(150));
 }

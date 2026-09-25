@@ -95,7 +95,7 @@ async fn syncs_a_working_tree_and_reads_a_file_from_it() {
 
     assert_eq!(synced, sha);
     assert_eq!(
-        git.read_file(&dir, "compose/app.yml").await.unwrap(),
+        std::fs::read_to_string(dir.join("compose/app.yml")).unwrap(),
         COMPOSE
     );
 }
@@ -118,7 +118,7 @@ async fn syncing_again_picks_up_a_new_commit() {
 
     assert_ne!(first, second);
     assert_eq!(
-        Git::new().read_file(&dir, "compose/app.yml").await.unwrap(),
+        std::fs::read_to_string(dir.join("compose/app.yml")).unwrap(),
         "services: {}\n",
         "the working tree must reflect the new commit"
     );
@@ -143,30 +143,13 @@ async fn local_edits_and_stray_files_are_discarded() {
     git.sync(&dir, &url, "refs/heads/main", None).await.unwrap();
 
     assert_eq!(
-        git.read_file(&dir, "compose/app.yml").await.unwrap(),
+        std::fs::read_to_string(dir.join("compose/app.yml")).unwrap(),
         COMPOSE
     );
     assert!(
         !dir.join("stray.txt").exists(),
         "untracked files must be cleaned"
     );
-}
-
-#[tokio::test]
-async fn a_missing_file_says_so_plainly() {
-    let remote = tempfile::tempdir().unwrap();
-    origin(remote.path());
-    let url = format!("file://{}", remote.path().display());
-    let work = tempfile::tempdir().unwrap();
-    let dir = work.path().join("repo");
-
-    let git = Git::new();
-    git.sync(&dir, &url, "refs/heads/main", None).await.unwrap();
-
-    assert!(matches!(
-        git.read_file(&dir, "compose/missing.yml").await,
-        Err(Error::NotInRepo(_))
-    ));
 }
 
 #[test]
