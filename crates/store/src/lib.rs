@@ -4,7 +4,9 @@
 //! encrypted at rest here and are write-only across the API boundary —
 //! they must never be returned in a response or written to a log.
 
+pub mod alerts;
 pub mod audit;
+pub mod checks;
 pub mod hosts;
 pub mod metrics;
 pub mod secrets;

@@ -26,6 +26,10 @@ pub mod purpose {
     pub const GIT_CREDENTIAL: &str = "git-credential";
     /// A stack's environment variable value.
     pub const STACK_ENV: &str = "stack-env";
+    /// Where an alert channel sends: webhook URLs carry their secret.
+    pub const ALERT_URL: &str = "alert-channel-url";
+    /// The bearer token an alert channel sends with.
+    pub const ALERT_TOKEN: &str = "alert-channel-token";
 }
 
 /// Environment variable the server reads the key from.
