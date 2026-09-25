@@ -45,6 +45,31 @@ pub enum Error {
     AccountsExist,
 }
 
+impl Error {
+    /// Whether SQLite found the file damaged or not a database at all, as
+    /// opposed to busy, locked, unreadable or out of space: the difference
+    /// between a file worth setting aside and one worth waiting for.
+    #[must_use]
+    pub fn is_corrupt(&self) -> bool {
+        /// SQLITE_CORRUPT and SQLITE_NOTADB.
+        const DAMAGED: [i32; 2] = [11, 26];
+        let cause = match self {
+            Self::Sqlx(e)
+            | Self::Migrate(
+                sqlx::migrate::MigrateError::Execute(e)
+                | sqlx::migrate::MigrateError::ExecuteMigration(e, _),
+            ) => e,
+            _ => return false,
+        };
+        cause
+            .as_database_error()
+            .and_then(|db| db.code())
+            .and_then(|code| code.parse::<i32>().ok())
+            // Extended codes carry the primary one in the low byte.
+            .is_some_and(|code| DAMAGED.contains(&(code & 0xff)))
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// A handle to the GhostDock database.

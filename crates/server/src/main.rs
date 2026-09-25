@@ -96,10 +96,17 @@ async fn serve() -> anyhow::Result<()> {
     let metrics_path = format!("{data_dir}/metrics.db");
     let metrics = match store::metrics::MetricsStore::open(&metrics_path).await {
         Ok(m) => Some(m),
+        // Locked, unreadable, out of space: the file may be fine, and
+        // replacing it would throw a year of history away over a hiccup.
+        // Run without history until the next start instead.
+        Err(e) if !e.is_corrupt() => {
+            tracing::error!(error = %e, "metrics.db could not be opened; running without history");
+            None
+        }
         Err(e) => {
             // History is expendable; GhostDock is not. Set the damaged file aside
             // and start a fresh one.
-            tracing::warn!(error = %e, "metrics.db could not be opened; starting a new one");
+            tracing::warn!(error = %e, "metrics.db is damaged; setting it aside and starting a new one");
             let aside = format!(
                 "{metrics_path}.broken-{}",
                 server::metrics::aligned(std::time::SystemTime::now(), 1)

@@ -200,7 +200,8 @@ async fn logs_text(
         })
         .collect();
 
-    let short = &id[..id.len().min(12)];
+    // By characters: a byte slice of a name could land inside one and panic.
+    let short = shared::short(&id, 12);
     Ok((
         [
             (

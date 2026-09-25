@@ -23,6 +23,26 @@ fn per_second(delta: u64, secs: f64) -> f64 {
     delta as f64 / secs
 }
 
+/// Length of a rolled-up period, in seconds.
+pub const QUARTER_SECS: i64 = 900;
+
+/// Which minutes to fold into quarter-hour rows, if any are due.
+///
+/// `written_to` is the end of the minutes written so far and `rolled_to`
+/// the quarter boundary rolled up to last time (`None` since starting).
+/// Keyed on the boundary having moved rather than on the clock landing on
+/// one, so a minute that runs late never skips a quarter. Returns the range
+/// `[from, to)` to roll up.
+#[must_use]
+pub fn quarter_due(written_to: i64, rolled_to: Option<i64>) -> Option<(i64, i64)> {
+    let boundary = written_to - written_to.rem_euclid(QUARTER_SECS);
+    match rolled_to {
+        Some(done) if done >= boundary => None,
+        Some(done) => Some((done, boundary)),
+        None => Some((boundary - QUARTER_SECS, boundary)),
+    }
+}
+
 /// Readings closer together than this give no rate.
 pub const MIN_ELAPSED: Duration = Duration::from_millis(500);
 

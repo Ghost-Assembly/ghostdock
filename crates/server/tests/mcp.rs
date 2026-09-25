@@ -420,6 +420,55 @@ async fn a_tool_the_token_may_not_use_does_not_exist_for_it() {
 }
 
 #[tokio::test]
+async fn a_token_allowed_only_to_edit_can_edit_a_compose_file() {
+    // Nothing beyond stacks.edit should be needed to do what it names.
+    let s = setup().await;
+    let (_, created) = s
+        .api(
+            "POST",
+            "/api/v1/hosts/1/stacks",
+            Some(json!({ "name": "Blog", "compose_yaml": COMPOSE })),
+        )
+        .await;
+    let id = created["id"].as_i64().unwrap();
+    let editor = s.token(&["stacks.edit"]).await;
+
+    let changed = "services:\n  web:\n    image: nginx:1.29-alpine\n";
+    let body = s
+        .tool(
+            &editor,
+            "update_compose",
+            json!({ "stack": id.to_string(), "compose_yaml": changed }),
+        )
+        .await;
+    assert_eq!(body["result"]["isError"], json!(false), "{body}");
+    let (_, compose) = s
+        .api("GET", &format!("/api/v1/stacks/{id}/compose"), None)
+        .await;
+    assert_eq!(
+        compose["compose_yaml"].as_str().map(str::trim),
+        Some(changed.trim())
+    );
+}
+
+#[tokio::test]
+async fn the_activity_tool_offers_no_more_than_the_api_returns() {
+    let s = setup().await;
+    let token = s.token(&["activity.view"]).await;
+    let list = s.rpc(&token, "tools/list", json!({})).await;
+    let activity = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == json!("activity"))
+        .unwrap();
+    assert_eq!(
+        activity["inputSchema"]["properties"]["limit"]["maximum"],
+        json!(200)
+    );
+}
+
+#[tokio::test]
 async fn tools_act_through_the_api_with_the_callers_token() {
     let s = setup().await;
     let token = s

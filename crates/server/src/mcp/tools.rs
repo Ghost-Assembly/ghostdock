@@ -405,7 +405,7 @@ const TOOLS: &[Tool] = &[
         input: || {
             json!({
                 "type": "object",
-                "properties": { "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "Default 50." } },
+                "properties": { "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Default 50." } },
             })
         },
     },
@@ -757,11 +757,18 @@ pub(super) async fn run(tool: &Tool, api: &Api, args: &Value) -> Result<Value, S
         "update_compose" => {
             let s = stack(api, args).await?;
             let yaml = text(args, "compose_yaml")?;
-            let current = api.get(&format!("/stacks/{}", s.id)).await?;
+            // The route changes only the file and ignores the name, so the
+            // stack is not read first: that would need host.view, which a
+            // token allowed only to edit need not have.
+            let name = s
+                .entry
+                .as_ref()
+                .and_then(|e| e["stack"]["name"].as_str())
+                .unwrap_or_default();
             api.request(
                 "PUT",
                 &format!("/stacks/{}", s.id),
-                Some(json!({ "name": current["name"], "compose_yaml": yaml })),
+                Some(json!({ "name": name, "compose_yaml": yaml })),
             )
             .await
         }
@@ -785,7 +792,7 @@ pub(super) async fn run(tool: &Tool, api: &Api, args: &Value) -> Result<Value, S
             .await
         }
         "activity" => {
-            let limit = usize::try_from(number(args, "limit", 50, 500)).unwrap_or(50);
+            let limit = usize::try_from(number(args, "limit", 50, 200)).unwrap_or(50);
             let entries = api.get("/audit").await?;
             Ok(named(
                 "entries",

@@ -13,6 +13,25 @@ fn r(t: i64, cpu: f64, mem: u64) -> Reading {
 }
 
 #[tokio::test]
+async fn a_damaged_file_is_told_apart_from_one_that_cannot_be_opened() {
+    // A damaged history is set aside and started afresh. Anything else (a
+    // lock, a permission, a full disk) must not cost the history.
+    let dir = tempfile::tempdir().unwrap();
+    let damaged = dir.path().join("metrics.db");
+    std::fs::write(&damaged, vec![0x5a_u8; 8192]).unwrap();
+    let e = MetricsStore::open(damaged.to_str().unwrap())
+        .await
+        .expect_err("not a database");
+    assert!(e.is_corrupt(), "{e}");
+
+    let unreachable = dir.path().join("missing/dir/metrics.db");
+    let e = MetricsStore::open(unreachable.to_str().unwrap())
+        .await
+        .expect_err("no such directory");
+    assert!(!e.is_corrupt(), "{e}");
+}
+
+#[tokio::test]
 async fn minutes_are_written_and_read_back_in_order() {
     let m = MetricsStore::open_in_memory().await.unwrap();
     let id = m
