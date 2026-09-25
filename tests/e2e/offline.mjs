@@ -50,6 +50,9 @@ const cached = await page.evaluate(async () => {
 console.log('cached        :', cached.sort().join(' '));
 if (cached.some(u => u.startsWith('/api/'))) problems.push('an API response was cached');
 if (!cached.some(u => u.endsWith('.wasm'))) problems.push('the app itself was not cached');
+// The sign-in screen draws no icons, so the page never asked for them; the
+// worker keeps them anyway, or an app opened offline has blank buttons.
+if (!cached.includes('/icons/lucide.svg')) problems.push('the icons were not kept for offline use');
 
 // 4. Offline, the app still opens, says why it cannot show anything, and
 // recovers by itself when the connection returns.

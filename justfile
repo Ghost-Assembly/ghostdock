@@ -36,7 +36,7 @@ build-web:
 # Every browser test, each against a freshly started server.
 # Needs a Docker daemon, git and node; builds what it needs first.
 test-e2e: build
-    npm install --silent --no-fund --no-audit --no-save playwright @modelcontextprotocol/sdk
+    npm install --silent --no-fund --no-audit --no-save playwright @modelcontextprotocol/sdk @axe-core/playwright
     npx playwright install chromium
     tests/e2e/run.sh
 

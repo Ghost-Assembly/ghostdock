@@ -257,6 +257,14 @@ test_live() {
   run live
 }
 
+test_a11y() {
+  # Every main screen, with a stack running so each has something to show.
+  start_fresh a11y
+  deploy_fixture Ticker "$TICKER"
+  sleep 3
+  run a11y
+}
+
 test_host() {
   start_fresh host
   deploy_fixture Chatter "$CHATTER"
@@ -267,7 +275,7 @@ test_host() {
 
 # With no arguments, everything; otherwise just the named tests, in order.
 TESTS=("$@")
-[[ ${#TESTS[@]} -eq 0 ]] && TESTS=(smoke perf deploy accounts tokens offline stall git discover shell live logs cleanup roam tabs jank layout host mcp)
+[[ ${#TESTS[@]} -eq 0 ]] && TESTS=(smoke perf deploy accounts tokens offline stall git discover shell live logs cleanup roam tabs jank layout host a11y mcp)
 for t in "${TESTS[@]}"; do
   "test_$t"
 done
