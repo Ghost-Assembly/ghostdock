@@ -24,19 +24,15 @@ pub fn routes() -> Router<AppState> {
         .route("/tokens/{id}", delete(revoke))
 }
 
-fn when(secs: i64) -> chrono::DateTime<chrono::Utc> {
-    chrono::DateTime::from_timestamp(secs, 0).unwrap_or_default()
-}
-
 fn to_wire(row: TokenRow) -> ApiToken {
     ApiToken {
         id: row.id,
         name: row.name,
         prefix: row.prefix,
         permissions: row.permissions,
-        created_at: when(row.created_at),
-        last_used_at: row.last_used_at.map(when),
-        expires_at: row.expires_at.map(when),
+        created_at: store::timestamp(row.created_at),
+        last_used_at: row.last_used_at.map(store::timestamp),
+        expires_at: row.expires_at.map(store::timestamp),
     }
 }
 

@@ -1,9 +1,8 @@
 //! Recording what was done.
 
-use chrono::DateTime;
 use shared::audit::AuditEntry;
 
-use crate::{Result, Store};
+use crate::{Result, Store, timestamp};
 
 impl Store {
     /// Records one action.
@@ -46,7 +45,7 @@ impl Store {
             .into_iter()
             .map(|(id, at, username, action, target, detail)| AuditEntry {
                 id,
-                at: DateTime::from_timestamp(at, 0).unwrap_or_default(),
+                at: timestamp(at),
                 username,
                 action,
                 target,

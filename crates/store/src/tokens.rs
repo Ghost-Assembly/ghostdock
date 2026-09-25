@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use shared::token::Permission;
 
 use crate::users::UserRow;
-use crate::{Error, Result, Store};
+use crate::{Error, Result, Store, unique_or};
 
 /// Marks a string as a GhostDock token, for people and for secret scanners.
 pub const SECRET_PREFIX: &str = "ghostdock_";
@@ -115,15 +115,7 @@ impl Store {
         .bind(expires_at)
         .fetch_one(self.pool())
         .await
-        .map_err(|e| {
-            if e.as_database_error()
-                .is_some_and(sqlx::error::DatabaseError::is_unique_violation)
-            {
-                Error::NameTaken
-            } else {
-                Error::Sqlx(e)
-            }
-        })?;
+        .map_err(unique_or(Error::NameTaken))?;
         Ok((to_row(row), secret))
     }
 

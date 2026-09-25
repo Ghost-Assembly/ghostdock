@@ -1,19 +1,27 @@
 //! Registered stacks and their deployment history.
 
-use chrono::{DateTime, Utc};
 use shared::deployment::{
     Action, Deployment, DeploymentDetail, DeploymentStatus, GitSource, RegisteredStack, SourceKind,
     Trigger,
 };
 
-use crate::{Error, Result, Store};
+use crate::{Error, Result, Store, timestamp, unique_or};
 
 /// Text written into the log of a deployment abandoned by a restart.
 const INTERRUPTED: &str = "GhostDock restarted while this was running; \
                            the outcome was never recorded (marked interrupted)";
 
-fn timestamp(secs: i64) -> DateTime<Utc> {
-    DateTime::from_timestamp(secs, 0).unwrap_or_default()
+/// Registered stacks, filtered by `$filter`: rows for [`StackTuple`].
+macro_rules! stack_select {
+    ($filter:literal) => {
+        concat!(
+            "SELECT s.id, s.host_id, s.slug, s.name, s.source_kind,
+                    s.repo_id, r.url, s.git_ref, s.compose_path, s.last_commit,
+                    s.created_at, s.updated_at
+             FROM stacks s LEFT JOIN repos r ON r.id = s.repo_id ",
+            $filter
+        )
+    };
 }
 
 /// id, host_id, slug, name, source_kind, repo_id, repo_url, git_ref,
@@ -157,15 +165,7 @@ impl Store {
         .bind(compose_yaml)
         .fetch_one(self.pool())
         .await
-        .map_err(|e| {
-            if e.as_database_error()
-                .is_some_and(sqlx::error::DatabaseError::is_unique_violation)
-            {
-                Error::SlugTaken
-            } else {
-                Error::Sqlx(e)
-            }
-        })?;
+        .map_err(unique_or(Error::SlugTaken))?;
         self.stack_by_id(id).await?.ok_or(Error::NotFound)
     }
 
@@ -193,15 +193,7 @@ impl Store {
         .bind(compose_path)
         .fetch_one(self.pool())
         .await
-        .map_err(|e| {
-            if e.as_database_error()
-                .is_some_and(sqlx::error::DatabaseError::is_unique_violation)
-            {
-                Error::SlugTaken
-            } else {
-                Error::Sqlx(e)
-            }
-        })?;
+        .map_err(unique_or(Error::SlugTaken))?;
         self.stack_by_id(id).await?.ok_or(Error::NotFound)
     }
 
@@ -216,44 +208,27 @@ impl Store {
     }
 
     pub async fn stacks_list(&self, host_id: i64) -> Result<Vec<RegisteredStack>> {
-        let rows = sqlx::query_as::<_, StackTuple>(
-            "SELECT s.id, s.host_id, s.slug, s.name, s.source_kind,
-                    s.repo_id, r.url, s.git_ref, s.compose_path, s.last_commit,
-                    s.created_at, s.updated_at
-             FROM stacks s LEFT JOIN repos r ON r.id = s.repo_id
-             WHERE s.host_id = ?1 ORDER BY s.slug",
-        )
-        .bind(host_id)
-        .fetch_all(self.pool())
-        .await?;
+        let rows =
+            sqlx::query_as::<_, StackTuple>(stack_select!("WHERE s.host_id = ?1 ORDER BY s.slug"))
+                .bind(host_id)
+                .fetch_all(self.pool())
+                .await?;
         Ok(rows.into_iter().map(to_stack).collect())
     }
 
     pub async fn stack_by_id(&self, id: i64) -> Result<Option<RegisteredStack>> {
-        let row = sqlx::query_as::<_, StackTuple>(
-            "SELECT s.id, s.host_id, s.slug, s.name, s.source_kind,
-                    s.repo_id, r.url, s.git_ref, s.compose_path, s.last_commit,
-                    s.created_at, s.updated_at
-             FROM stacks s LEFT JOIN repos r ON r.id = s.repo_id
-             WHERE s.id = ?1",
-        )
-        .bind(id)
-        .fetch_optional(self.pool())
-        .await?;
+        let row = sqlx::query_as::<_, StackTuple>(stack_select!("WHERE s.id = ?1"))
+            .bind(id)
+            .fetch_optional(self.pool())
+            .await?;
         Ok(row.map(to_stack))
     }
 
     pub async fn stack_by_slug(&self, slug: &str) -> Result<Option<RegisteredStack>> {
-        let row = sqlx::query_as::<_, StackTuple>(
-            "SELECT s.id, s.host_id, s.slug, s.name, s.source_kind,
-                    s.repo_id, r.url, s.git_ref, s.compose_path, s.last_commit,
-                    s.created_at, s.updated_at
-             FROM stacks s LEFT JOIN repos r ON r.id = s.repo_id
-             WHERE s.slug = ?1",
-        )
-        .bind(slug)
-        .fetch_optional(self.pool())
-        .await?;
+        let row = sqlx::query_as::<_, StackTuple>(stack_select!("WHERE s.slug = ?1"))
+            .bind(slug)
+            .fetch_optional(self.pool())
+            .await?;
         Ok(row.map(to_stack))
     }
 
