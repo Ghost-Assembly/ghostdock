@@ -605,3 +605,41 @@ fn subject_row(
         last_seen,
     })
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// How SQLite would run `sql`, its plan's lines joined.
+    async fn plan(m: &MetricsStore, sql: &str) -> String {
+        // A test's own literal tables, not input.
+        let explain = sqlx::AssertSqlSafe(format!("EXPLAIN QUERY PLAN {sql}"));
+        sqlx::query_as::<_, (i64, i64, i64, String)>(explain)
+            .bind(0_i64)
+            .bind(0_i64)
+            .fetch_all(&m.pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(.., detail)| detail)
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
+    #[tokio::test]
+    async fn rollup_and_pruning_find_rows_by_time_without_a_full_scan() {
+        // Both filter on `t` alone, which the (subject_id, t) key cannot
+        // serve: without an index of their own they read every row kept.
+        let m = MetricsStore::open_in_memory().await.unwrap();
+        for table in ["samples_1m", "samples_15m"] {
+            for sql in [
+                format!("SELECT subject_id FROM {table} WHERE t >= ?1 AND t < ?2"),
+                format!("DELETE FROM {table} WHERE t < ?1 AND ?2 = ?2"),
+            ] {
+                let plan = plan(&m, &sql).await;
+                assert!(plan.contains(&format!("idx_{table}_t")), "{sql}: {plan}");
+            }
+        }
+    }
+}
