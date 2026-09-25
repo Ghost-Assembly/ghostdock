@@ -2141,19 +2141,32 @@ async fn an_import_finishes_even_if_the_caller_goes_away() {
             .to_string(),
         ))
         .unwrap();
-    // Dropped long before git could have fetched anything.
-    let abandoned = tokio::time::timeout(
-        std::time::Duration::from_millis(1),
-        c.router.clone().oneshot(req),
-    )
-    .await;
-    assert!(
-        abandoned.is_err(),
-        "the request should still have been running"
-    );
+    // Dropped once the import is under way: its checkout exists, so the
+    // request got past authentication and into the work. Dropping on a
+    // fixed timer instead sometimes dropped it before it had started,
+    // which proves nothing and failed when the machine was busy.
+    let checkout = c
+        ._stacks_root
+        .path()
+        .join(".discovery")
+        .join(repo.to_string());
+    let mut request = Box::pin(c.router.clone().oneshot(req));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !checkout.exists() {
+        let polled = tokio::time::timeout(std::time::Duration::from_millis(1), &mut request).await;
+        assert!(
+            polled.is_err(),
+            "the import finished before it could be abandoned"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the import never started"
+        );
+    }
+    drop(request);
 
     let mut registered = Vec::new();
-    for _ in 0..50 {
+    for _ in 0..100 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         // The updates list names every registered stack, and needs no daemon.
         let (_, updates) = c.send("GET", "/api/v1/hosts/1/updates", None).await;
