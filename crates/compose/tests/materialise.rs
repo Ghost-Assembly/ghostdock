@@ -51,6 +51,37 @@ async fn the_env_file_is_readable_only_by_its_owner() {
 }
 
 #[tokio::test]
+async fn a_git_stacks_env_file_is_written_alone_by_the_same_rules() {
+    // Its compose file stays in the repository; only the .env is written,
+    // private, and removed when the last variable goes.
+    let root = tempfile::tempdir().unwrap();
+    let compose = Compose::new(root.path());
+
+    let path = compose
+        .write_env_file("repo-app", &vars(&[("TOKEN", "hunter2")]))
+        .await
+        .unwrap()
+        .expect("a file for the variables");
+    assert_eq!(path, root.path().join("repo-app").join(ENV_FILE));
+    assert!(!root.path().join("repo-app").join(COMPOSE_FILE).exists());
+    let mode = tokio::fs::metadata(&path)
+        .await
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+
+    let none = compose.write_env_file("repo-app", &[]).await.unwrap();
+    assert!(none.is_none());
+    assert!(
+        !path.exists(),
+        "a stale .env keeps applying deleted variables"
+    );
+    assert!(compose.write_env_file("../out", &[]).await.is_err());
+}
+
+#[tokio::test]
 async fn removing_every_variable_removes_the_env_file() {
     let root = tempfile::tempdir().unwrap();
     let compose = Compose::new(root.path());
