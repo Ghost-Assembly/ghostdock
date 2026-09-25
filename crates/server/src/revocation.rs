@@ -6,10 +6,11 @@
 //! it would outlive the credential that opened it.
 
 use std::future::Future;
+use std::time::Duration;
 
 use tokio::sync::broadcast;
 
-use crate::auth::{Principal, Via};
+use crate::auth::{Principal, SessionKey, Via};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Revocation {
@@ -20,6 +21,8 @@ pub enum Revocation {
     /// An account's password changed: its sessions are void, its tokens
     /// are not.
     Sessions(i64),
+    /// One session signed out.
+    Session(SessionKey),
 }
 
 impl Revocation {
@@ -27,7 +30,13 @@ impl Revocation {
         match (self, &principal.via) {
             (Self::Token(id), Via::Token { id: held, .. }) => id == *held,
             (Self::Account(user), _) => user == principal.user.id,
-            (Self::Sessions(user), Via::Session) => user == principal.user.id,
+            (Self::Sessions(user), Via::Session { .. }) => user == principal.user.id,
+            (
+                Self::Session(key),
+                Via::Session {
+                    session: Some(held),
+                },
+            ) => key == *held,
             _ => false,
         }
     }
@@ -56,14 +65,19 @@ impl Revocations {
         let _ = self.tx.send(revocation);
     }
 
-    /// Completes when a revocation covering `principal` is announced.
+    /// Completes when a revocation covering `principal` is announced, or
+    /// when the token it holds expires.
     ///
     /// Subscribes immediately, not when first polled, so nothing announced
     /// between this call and the connection starting is missed.
     pub fn until_revoked(&self, principal: &Principal) -> impl Future<Output = ()> + Send + use<> {
         let mut rx = self.tx.subscribe();
+        let expires_at = match &principal.via {
+            Via::Token { expires_at, .. } => *expires_at,
+            Via::Session { .. } => None,
+        };
         let principal = principal.clone();
-        async move {
+        let announced = async move {
             loop {
                 match rx.recv().await {
                     Ok(r) if r.applies_to(&principal) => return,
@@ -77,6 +91,24 @@ impl Revocations {
                     }
                 }
             }
+        };
+        async move {
+            tokio::select! {
+                () = announced => {}
+                () = expiry(expires_at) => {}
+            }
         }
     }
+}
+
+/// Completes at `expires_at` (Unix seconds), or never without one.
+async fn expiry(expires_at: Option<i64>) {
+    let Some(expires_at) = expires_at else {
+        return std::future::pending().await;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    let left = u64::try_from(expires_at.saturating_sub(now)).unwrap_or(0);
+    tokio::time::sleep(Duration::from_secs(left)).await;
 }

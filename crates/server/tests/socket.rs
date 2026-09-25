@@ -195,6 +195,78 @@ async fn revoking_the_token_closes_the_socket() {
     assert!(ended.is_ok(), "the socket outlived its token");
 }
 
+async fn connect_with_cookie(
+    s: &Served,
+    cookie: &str,
+) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
+    let mut request = format!("ws://{}/api/v1/events/socket", s.addr)
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("cookie", cookie.parse().unwrap());
+    tokio_tungstenite::connect_async(request)
+        .await
+        .expect("connects")
+        .0
+}
+
+/// Whether the socket closes within `within`.
+async fn closes(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    within: Duration,
+) -> bool {
+    tokio::time::timeout(within, async {
+        while let Some(Ok(message)) = ws.next().await {
+            if message.is_close() {
+                return;
+            }
+        }
+    })
+    .await
+    .is_ok()
+}
+
+#[tokio::test]
+async fn signing_out_closes_that_sessions_socket_and_no_other() {
+    let s = serve().await;
+    let (_, signed_out) = token(&s, &["host.view"]).await;
+    let (_, _, other) = call(
+        &s.router,
+        "POST",
+        "/api/v1/auth/login",
+        None,
+        json!({ "username": "admin", "password": "correct horse battery staple" }),
+    )
+    .await;
+    let other = other.unwrap();
+
+    let mut leaving = connect_with_cookie(&s, &signed_out).await;
+    let mut staying = connect_with_cookie(&s, &other).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let (status, _, _) = call(
+        &s.router,
+        "POST",
+        "/api/v1/auth/logout",
+        Some(&signed_out),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    assert!(
+        closes(&mut leaving, Duration::from_secs(5)).await,
+        "the socket outlived its session"
+    );
+    assert!(
+        !closes(&mut staying, Duration::from_millis(500)).await,
+        "signing out on one device closed another's socket"
+    );
+}
+
 async fn connect_to(
     s: &Served,
     path: &str,

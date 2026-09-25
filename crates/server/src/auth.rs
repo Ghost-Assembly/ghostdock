@@ -25,13 +25,36 @@ const SESSION_EPOCH: &str = "epoch";
 #[derive(Debug, Clone)]
 pub enum Via {
     /// A person signed in through the browser. Can do everything.
-    Session,
+    Session {
+        /// Which session, so signing out can end its open connections.
+        session: Option<SessionKey>,
+    },
     /// An API token, which can do only what it was granted.
     Token {
         id: i64,
         name: String,
         permissions: Vec<Permission>,
+        /// Unix seconds. A connection the token opened ends then.
+        expires_at: Option<i64>,
     },
+}
+
+/// Identifies one browser session.
+///
+/// Its value is as good as the cookie, so it is kept out of `Debug`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct SessionKey(pub i128);
+
+impl std::fmt::Debug for SessionKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SessionKey(<redacted>)")
+    }
+}
+
+impl From<tower_sessions::session::Id> for SessionKey {
+    fn from(id: tower_sessions::session::Id) -> Self {
+        Self(id.0)
+    }
 }
 
 /// The authenticated caller.
@@ -50,7 +73,7 @@ impl Principal {
     #[must_use]
     pub fn can(&self, permission: Permission) -> bool {
         match &self.via {
-            Via::Session => true,
+            Via::Session { .. } => true,
             Via::Token { permissions, .. } => permissions.contains(&permission),
         }
     }
@@ -60,7 +83,7 @@ impl Principal {
     #[must_use]
     pub fn display_name(&self) -> String {
         match &self.via {
-            Via::Session => self.user.username.clone(),
+            Via::Session { .. } => self.user.username.clone(),
             Via::Token { name, .. } => format!("{} (token {name})", self.user.username),
         }
     }
@@ -90,6 +113,7 @@ impl Principal {
                     id: token.id,
                     name: token.name,
                     permissions: token.permissions,
+                    expires_at: token.expires_at,
                 },
             });
         }
@@ -121,7 +145,9 @@ impl Principal {
 
         Ok(Self {
             user: row.to_public(),
-            via: Via::Session,
+            via: Via::Session {
+                session: session.id().map(SessionKey::from),
+            },
         })
     }
 }
@@ -135,7 +161,7 @@ impl FromRequestParts<AppState> for Principal {
     ) -> Result<Self, Self::Rejection> {
         let principal = Self::resolve(parts, state).await?;
         match principal.via {
-            Via::Session => Ok(principal),
+            Via::Session { .. } => Ok(principal),
             Via::Token { .. } => Err(ApiError::SessionOnly),
         }
     }
@@ -328,10 +354,20 @@ async fn login(
     }
 }
 
-async fn logout(session: Session) -> Result<axum::http::StatusCode, ApiError> {
+async fn logout(
+    State(state): State<AppState>,
+    session: Session,
+) -> Result<axum::http::StatusCode, ApiError> {
+    let signed_out = session.id().map(SessionKey::from);
     // `flush` deletes the record server-side, so the cookie is worthless even
     // if it was captured.
     session.flush().await?;
+    // And what this session holds open ends with it, on every tab.
+    if let Some(key) = signed_out {
+        state
+            .revocations
+            .revoke(crate::revocation::Revocation::Session(key));
+    }
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
