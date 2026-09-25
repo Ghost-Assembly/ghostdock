@@ -41,6 +41,8 @@ pub enum Error {
     LastAccount,
     #[error("that name is already in use")]
     NameTaken,
+    #[error("an account already exists")]
+    AccountsExist,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

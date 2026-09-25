@@ -184,10 +184,15 @@ async fn serve() -> anyhow::Result<()> {
         None
     };
 
-    axum::serve(listener, app::build(state, secure_cookies, ui))
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("server error")?;
+    // With each connection's address, which sign-in attempts are counted by.
+    axum::serve(
+        listener,
+        app::build(state, secure_cookies, ui)
+            .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("server error")?;
 
     Ok(())
 }

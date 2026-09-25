@@ -298,15 +298,18 @@ async fn bootstrap(
         ));
     }
 
-    let hash =
-        hash_password(&credentials.password).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let hash = hash_blocking(credentials.password).await?;
 
+    // The check above is for a quick answer; this one is the guarantee. Two
+    // people setting up at once must not both become administrator.
     let row = state
         .store
-        .user_create(username, &hash)
+        .user_create_first(username, &hash)
         .await
         .map_err(|e| match e {
-            store::Error::UsernameTaken => ApiError::Conflict("that username is taken".to_owned()),
+            store::Error::AccountsExist => {
+                ApiError::Conflict("this instance already has an administrator".to_owned())
+            }
             other => ApiError::from(other),
         })?;
 
@@ -317,41 +320,82 @@ async fn bootstrap(
 
 async fn login(
     State(state): State<AppState>,
+    ClientAddress(address): ClientAddress,
     session: Session,
     Json(credentials): Json<Credentials>,
 ) -> Result<Json<User>, ApiError> {
-    let row = state
-        .store
-        .user_by_username(credentials.username.trim())
-        .await?;
+    let username = credentials.username.trim();
+    // Refused before the password is looked at, so a run of guesses costs
+    // neither a hash nor an answer about whether a guess was right.
+    if !state
+        .login_limiter
+        .allows(username, address, std::time::Instant::now())
+    {
+        return Err(ApiError::TooManyAttempts);
+    }
+
+    let row = state.store.user_by_username(username).await?;
 
     // Verify even when the user does not exist, against a hash that cannot
     // match, so a missing account and a wrong password take the same time.
     // Otherwise response latency enumerates valid usernames.
     let stored = row
         .as_ref()
-        .map_or(DUMMY_HASH, |r| r.password_hash.as_str());
-    let password_ok = verify_password(&credentials.password, stored);
+        .map_or_else(|| DUMMY_HASH.to_owned(), |r| r.password_hash.clone());
+    let password_ok = verify_blocking(credentials.password, stored).await?;
 
     match row {
         Some(row) if password_ok => {
+            state.login_limiter.succeeded(username);
             start_session(&session, &row).await?;
             crate::audit::record_anonymous(&state, &row.username, "sign in", "ghostdock").await;
             Ok(Json(row.to_public()))
         }
         _ => {
+            state
+                .login_limiter
+                .failed(username, address, std::time::Instant::now());
             // Failed attempts are recorded too: a run of them is the thing
             // an audit trail exists to make visible.
-            crate::audit::record_anonymous(
-                &state,
-                credentials.username.trim(),
-                "failed sign in",
-                "ghostdock",
-            )
-            .await;
+            crate::audit::record_anonymous(&state, username, "failed sign in", "ghostdock").await;
             Err(ApiError::InvalidCredentials)
         }
     }
+}
+
+/// The address a request came from, when the server was started with it.
+///
+/// That is the peer's address: behind a reverse proxy, the proxy's.
+#[derive(Debug, Clone, Copy)]
+pub struct ClientAddress(pub Option<std::net::IpAddr>);
+
+impl<S: Send + Sync> FromRequestParts<S> for ClientAddress {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Self::Rejection> {
+        Ok(Self(
+            parts
+                .extensions
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map(|info| info.0.ip()),
+        ))
+    }
+}
+
+/// Hashes a password on the blocking pool. Argon2 is deliberately slow,
+/// and on an async worker it would stall every request sharing it.
+pub(crate) async fn hash_blocking(password: String) -> Result<String, ApiError> {
+    tokio::task::spawn_blocking(move || hash_password(&password))
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::Error::new(e)))?
+        .map_err(|e| ApiError::BadRequest(e.to_string()))
+}
+
+/// Checks a password on the blocking pool, as [`hash_blocking`] hashes one.
+async fn verify_blocking(password: String, stored: String) -> Result<bool, ApiError> {
+    tokio::task::spawn_blocking(move || verify_password(&password, &stored))
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::Error::new(e)))
 }
 
 async fn logout(
@@ -386,10 +430,10 @@ async fn change_password(
         .user_by_id(principal.user.id)
         .await?
         .ok_or(ApiError::NotAuthenticated)?;
-    if !verify_password(&change.current, &row.password_hash) {
+    if !verify_blocking(change.current, row.password_hash.clone()).await? {
         return Err(ApiError::WrongPassword);
     }
-    let hash = hash_password(&change.new).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let hash = hash_blocking(change.new).await?;
     let epoch = state.store.user_set_password(row.id, &hash).await?;
 
     // Every other session is now void. This one carries on, under a new id.

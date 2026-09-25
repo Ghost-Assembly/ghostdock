@@ -71,6 +71,26 @@ impl Store {
         Ok(to_row(row))
     }
 
+    /// Creates the first account, failing with [`Error::AccountsExist`] if
+    /// there is any account already.
+    ///
+    /// One statement, so "is there anyone yet" and "add this one" cannot be
+    /// split by another request doing the same: two people setting up at
+    /// once cannot both become the first administrator.
+    pub async fn user_create_first(&self, username: &str, password_hash: &str) -> Result<UserRow> {
+        let row = sqlx::query_as::<_, UserTuple>(
+            "INSERT INTO users (username, password_hash, created_at)
+             SELECT ?1, ?2, unixepoch()
+             WHERE NOT EXISTS (SELECT 1 FROM users)
+             RETURNING id, username, password_hash, created_at, session_epoch",
+        )
+        .bind(username)
+        .bind(password_hash)
+        .fetch_optional(self.pool())
+        .await?;
+        row.map(to_row).ok_or(Error::AccountsExist)
+    }
+
     /// Looks a user up by name, case-insensitively.
     pub async fn user_by_username(&self, username: &str) -> Result<Option<UserRow>> {
         let found = sqlx::query_as::<_, UserTuple>(

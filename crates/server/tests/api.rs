@@ -158,6 +158,74 @@ async fn bootstrap_is_refused_once_an_admin_exists() {
 }
 
 #[tokio::test]
+async fn two_people_setting_up_at_once_do_not_both_become_administrator() {
+    let a = Client::new().await;
+    let mut b = a.sibling();
+    let mut a = a;
+    let (first, second) = tokio::join!(
+        a.send(
+            "POST",
+            "/api/v1/auth/bootstrap",
+            Some(Client::credentials("first", PASSWORD)),
+        ),
+        b.send(
+            "POST",
+            "/api/v1/auth/bootstrap",
+            Some(Client::credentials("second", PASSWORD)),
+        ),
+    );
+    let mut statuses = [first.0, second.0];
+    statuses.sort();
+    assert_eq!(statuses, [StatusCode::OK, StatusCode::CONFLICT]);
+
+    let signed_in = if first.0 == StatusCode::OK {
+        &mut a
+    } else {
+        &mut b
+    };
+    let (_, users) = signed_in.send("GET", "/api/v1/users", None).await;
+    assert_eq!(users.as_array().map(Vec::len), Some(1), "{users}");
+}
+
+#[tokio::test]
+async fn repeated_failed_sign_ins_are_refused_for_a_while() {
+    let mut c = Client::signed_in().await;
+    c.send("POST", "/api/v1/auth/logout", None).await;
+    for _ in 0..10 {
+        let (status, _) = c
+            .send(
+                "POST",
+                "/api/v1/auth/login",
+                Some(Client::credentials("admin", "a wrong guess, again")),
+            )
+            .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    // Even the right password, now: the point is not to be told which
+    // guess was right.
+    let (status, body) = c
+        .send(
+            "POST",
+            "/api/v1/auth/login",
+            Some(Client::credentials("Admin", PASSWORD)),
+        )
+        .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(body["code"], json!("too_many_attempts"));
+
+    // Someone else's account is not locked by it.
+    let (status, _) = c
+        .send(
+            "POST",
+            "/api/v1/auth/login",
+            Some(Client::credentials("someone", "a wrong guess, again")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn bootstrap_enforces_the_password_policy() {
     let mut c = Client::new().await;
     let (status, body) = c

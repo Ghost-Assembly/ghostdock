@@ -27,6 +27,55 @@ async fn create_then_look_up_by_name_and_id() {
 }
 
 #[tokio::test]
+async fn only_the_very_first_account_can_be_created_as_the_first() {
+    // Checking for accounts and then inserting would let two people setting
+    // up at once both become administrator. One statement cannot.
+    let s = store().await;
+    let first = s
+        .user_create_first("admin", "$argon2id$fake")
+        .await
+        .unwrap();
+    assert_eq!(first.username, "admin");
+
+    assert!(matches!(
+        s.user_create_first("second", "$argon2id$fake").await,
+        Err(store::Error::AccountsExist)
+    ));
+    assert_eq!(s.user_count().await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn concurrent_first_accounts_yield_exactly_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("race.db");
+    let mut key = [0u8; 32];
+    key[0] = 1;
+    let s = Store::open(path.to_str().unwrap(), store::secrets::Cipher::new(&key))
+        .await
+        .unwrap();
+
+    let attempts: Vec<_> = (0..8)
+        .map(|i| {
+            let s = s.clone();
+            tokio::spawn(async move {
+                s.user_create_first(&format!("admin{i}"), "$argon2id$fake")
+                    .await
+            })
+        })
+        .collect();
+    let mut created = 0;
+    for attempt in attempts {
+        match attempt.await.unwrap() {
+            Ok(_) => created += 1,
+            Err(store::Error::AccountsExist) => {}
+            Err(other) => panic!("{other}"),
+        }
+    }
+    assert_eq!(created, 1);
+    assert_eq!(s.user_count().await.unwrap(), 1);
+}
+
+#[tokio::test]
 async fn lookup_is_case_insensitive() {
     let s = store().await;
     s.user_create("Admin", "$argon2id$fake").await.unwrap();

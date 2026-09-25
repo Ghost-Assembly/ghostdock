@@ -30,6 +30,8 @@ pub enum ApiError {
     Conflict(String),
     #[error("the Docker daemon is not reachable")]
     DaemonUnavailable,
+    #[error("Too many failed sign-ins. Try again in a few minutes.")]
+    TooManyAttempts,
     /// Anything unexpected. The cause is logged; the client is told nothing.
     #[error("internal error")]
     Internal(#[source] anyhow::Error),
@@ -50,6 +52,7 @@ impl ApiError {
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
             Self::DaemonUnavailable => (StatusCode::SERVICE_UNAVAILABLE, "daemon_unavailable"),
+            Self::TooManyAttempts => (StatusCode::TOO_MANY_REQUESTS, "too_many_attempts"),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         }
     }
