@@ -484,6 +484,22 @@ pub(super) fn listed(permissions: &[Permission]) -> Vec<Value> {
         .collect()
 }
 
+/// Every tool as the reference lists it, whatever a caller may use.
+pub(super) fn reference() -> Vec<shared::reference::Tool> {
+    TOOLS
+        .iter()
+        .map(|t| shared::reference::Tool {
+            name: t.name.to_owned(),
+            title: t.title.to_owned(),
+            description: t.description.to_owned(),
+            permission: t.permission,
+            input_schema: serde_json::to_string_pretty(&(t.input)()).unwrap_or_default(),
+            read_only: t.read_only,
+            destructive: t.destructive,
+        })
+        .collect()
+}
+
 pub(super) fn find(name: &str, permissions: &[Permission]) -> Option<&'static Tool> {
     TOOLS
         .iter()

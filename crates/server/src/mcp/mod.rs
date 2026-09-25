@@ -53,6 +53,27 @@ pub fn routes(state: AppState, api: Router) -> Router {
         .with_state(Mcp { state, api })
 }
 
+/// The entries [`routes`] adds to the endpoint table. Listed by hand, as
+/// `/mcp` is mounted outside the API; `tests/reference.rs` fails if a route
+/// here goes unlisted. GET and DELETE only say POST is the way in.
+#[must_use]
+pub fn endpoints() -> Vec<shared::reference::Endpoint> {
+    vec![shared::reference::Endpoint {
+        method: "POST".to_owned(),
+        path: "/mcp".to_owned(),
+        area: "MCP".to_owned(),
+        access: shared::reference::Access::AnyToken,
+        summary: "The MCP server, over Streamable HTTP; each tool needs its own permission"
+            .to_owned(),
+    }]
+}
+
+/// Every tool, whatever a caller's permissions.
+#[must_use]
+pub fn tools() -> Vec<shared::reference::Tool> {
+    tools::reference()
+}
+
 /// No server-initiated stream is offered, and there is no session to end.
 async fn not_offered() -> Response {
     (

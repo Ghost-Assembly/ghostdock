@@ -3,38 +3,99 @@
 //! Secrets are write-only here: they go in when created and no route ever
 //! returns one, not even masked. A masked value still discloses its length.
 
+use axum::Json;
 use axum::extract::{Path, State};
-use axum::routing::{get, post};
-use axum::{Json, Router};
 use shared::deployment::RegisteredStack;
+use shared::reference::Access;
 use shared::source::{
     Credential, EnvValue, EnvVar, NewCredential, NewGitStack, NewRepo, Repo, StackEnv, StackEnvKeys,
 };
+use shared::token::Permission;
 
 use crate::auth::{Authorized, perm};
 use crate::error::ApiError;
+use crate::reference::Routes;
 use crate::state::AppState;
 
-pub fn routes() -> Router<AppState> {
-    Router::new()
-        .route(
+pub fn routes() -> Routes {
+    let view = Access::Token(Permission::HostView);
+    let credentials = Access::Token(Permission::CredentialsManage);
+    let repos = Access::Token(Permission::ReposManage);
+    let env = Access::Token(Permission::EnvWrite);
+    Routes::new("Sources")
+        .get(
             "/credentials",
-            get(list_credentials).post(create_credential),
+            view,
+            "Stored credentials by name; never their secrets",
+            list_credentials,
         )
-        .route(
+        .post(
+            "/credentials",
+            credentials,
+            "Stores a credential for reaching repositories; the secret cannot be read back",
+            create_credential,
+        )
+        .delete(
             "/credentials/{id}",
-            axum::routing::delete(delete_credential),
+            credentials,
+            "Removes a credential no repository uses",
+            delete_credential,
         )
-        .route("/repos", get(list_repos).post(create_repo))
-        .route(
+        .get(
+            "/repos",
+            view,
+            "Registered repositories and the credential each uses",
+            list_repos,
+        )
+        .post(
+            "/repos",
+            repos,
+            "Registers a repository by URL, with an optional credential",
+            create_repo,
+        )
+        .put(
             "/repos/{id}",
-            axum::routing::put(set_repo_credential).delete(delete_repo),
+            repos,
+            "Changes which credential a repository uses",
+            set_repo_credential,
         )
-        .route("/hosts/{host_id}/stacks/git", post(create_git_stack))
-        .route("/stacks/{id}/env", get(list_env).put(set_env))
-        .route(
+        .delete(
+            "/repos/{id}",
+            repos,
+            "Removes a repository no stack comes from",
+            delete_repo,
+        )
+        .area("Stacks")
+        .post(
+            "/hosts/{host_id}/stacks/git",
+            Access::Token(Permission::StacksCreate),
+            "Registers a stack from a compose file in a repository",
+            create_git_stack,
+        )
+        .area("Environment")
+        .get(
+            "/stacks/{id}/env",
+            view,
+            "The names of a stack's environment variables; never their values",
+            list_env,
+        )
+        .put(
+            "/stacks/{id}/env",
+            env,
+            "Replaces a stack's environment variables",
+            set_env,
+        )
+        .put(
             "/stacks/{id}/env/{key}",
-            axum::routing::put(set_one_env).delete(delete_one_env),
+            env,
+            "Sets one environment variable",
+            set_one_env,
+        )
+        .delete(
+            "/stacks/{id}/env/{key}",
+            env,
+            "Removes one environment variable",
+            delete_one_env,
         )
 }
 

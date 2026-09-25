@@ -3,23 +3,42 @@
 //! Every route sits beneath a host id even though v1 manages exactly one
 //! host, so adding more later is routing, not a redesign.
 
+use axum::Json;
 use axum::extract::{Path, State};
-use axum::routing::get;
-use axum::{Json, Router};
 use shared::container::Container;
 use shared::host::{Host, HostInfo};
+use shared::reference::Access;
 use shared::stack::{Managed, Stack};
+use shared::token::Permission;
 
 use crate::auth::{Authorized, perm};
 use crate::error::ApiError;
+use crate::reference::Routes;
 use crate::state::AppState;
 
-pub fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/hosts", get(list_hosts))
-        .route("/hosts/{host_id}", get(host_info))
-        .route("/hosts/{host_id}/containers", get(list_containers))
-        .route("/hosts/{host_id}/stacks", get(list_stacks))
+pub fn routes() -> Routes {
+    let view = Access::Token(Permission::HostView);
+    Routes::new("Hosts")
+        .get("/hosts", view, "The hosts GhostDock manages", list_hosts)
+        .get(
+            "/hosts/{host_id}",
+            view,
+            "The Docker daemon's version and counts, and any deployment problem",
+            host_info,
+        )
+        .get(
+            "/hosts/{host_id}/containers",
+            view,
+            "Every container on the host",
+            list_containers,
+        )
+        .area("Stacks")
+        .get(
+            "/hosts/{host_id}/stacks",
+            view,
+            "Every compose stack on the host with its state, managed or not",
+            list_stacks,
+        )
 }
 
 async fn list_hosts(

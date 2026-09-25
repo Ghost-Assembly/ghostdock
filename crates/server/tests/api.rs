@@ -2584,3 +2584,85 @@ async fn every_change_to_a_stack_or_its_sources_is_recorded_without_values() {
     assert!(!rendered.contains("sk_live_secret"), "a value was recorded");
     assert!(!rendered.contains("sk_in_compose"), "the file was recorded");
 }
+
+// ---- Reference ----------------------------------------------------------
+
+#[tokio::test]
+async fn the_reference_describes_endpoints_tools_and_permissions() {
+    let mut c = Client::signed_in().await;
+    let (status, body) = c.send("GET", "/api/v1/reference", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let endpoints = body["endpoints"].as_array().expect("endpoints");
+    let find = |method: &str, path: &str| {
+        endpoints
+            .iter()
+            .find(|e| e["method"] == json!(method) && e["path"] == json!(path))
+            .unwrap_or_else(|| panic!("{method} {path} is not in the reference"))
+    };
+    let deploy = find("POST", "/api/v1/stacks/{id}/deploy");
+    assert_eq!(
+        deploy["access"],
+        json!({ "kind": "token", "permission": "stacks.deploy" })
+    );
+    assert!(deploy["area"].is_string());
+    assert!(!deploy["summary"].as_str().unwrap_or_default().is_empty());
+    assert_eq!(
+        find("POST", "/api/v1/tokens")["access"],
+        json!({ "kind": "session" })
+    );
+    assert_eq!(
+        find("GET", "/api/v1/health")["access"],
+        json!({ "kind": "public" })
+    );
+    assert_eq!(
+        find("GET", "/api/v1/reference")["access"],
+        json!({ "kind": "authenticated" })
+    );
+    assert_eq!(
+        find("POST", "/mcp")["access"],
+        json!({ "kind": "any_token" })
+    );
+
+    let tools = body["tools"].as_array().expect("tools");
+    let tool = tools
+        .iter()
+        .find(|t| t["name"] == json!("deploy_stack"))
+        .expect("deploy_stack is listed");
+    assert_eq!(tool["permission"], json!("stacks.deploy"));
+    assert!(!tool["description"].as_str().unwrap_or_default().is_empty());
+    let schema: Value =
+        serde_json::from_str(tool["input_schema"].as_str().expect("schema text")).expect("json");
+    assert_eq!(schema["required"], json!(["stack"]));
+
+    let permissions = body["permissions"].as_array().expect("permissions");
+    assert_eq!(permissions.len(), shared::token::Permission::ALL.len());
+    let shell = permissions
+        .iter()
+        .find(|p| p["permission"] == json!("shell.open"))
+        .expect("shell.open is listed");
+    assert_eq!(shell["area"], json!("Host"));
+    assert!(!shell["description"].as_str().unwrap_or_default().is_empty());
+}
+
+#[tokio::test]
+async fn any_valid_token_may_read_the_reference_and_no_one_else() {
+    let mut c = Client::signed_in().await;
+    // A permission that has nothing to do with the reference.
+    let mut token = c.with_token("activity", &["activity.view"]).await;
+    let (status, _) = token.send("GET", "/api/v1/reference", None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let mut anonymous = c.sibling();
+    let (status, body) = anonymous.send("GET", "/api/v1/reference", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], json!("not_authenticated"));
+
+    // A bearer that is not a token is refused, not ignored in favor of the
+    // cookie sent with it.
+    let mut forged = c.sibling();
+    forged.cookie.clone_from(&c.cookie);
+    forged.bearer = Some("ghostdock_not_a_real_token".to_owned());
+    let (status, _) = forged.send("GET", "/api/v1/reference", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}

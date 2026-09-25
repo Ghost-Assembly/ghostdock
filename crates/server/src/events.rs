@@ -9,11 +9,11 @@
 
 use std::convert::Infallible;
 
-use axum::Router;
 use axum::extract::State;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::routing::get;
 use futures::stream::{Stream, StreamExt};
+use shared::reference::Access;
+use shared::token::Permission;
 use tokio::sync::{broadcast, watch};
 use tokio_stream::wrappers::BroadcastStream;
 
@@ -23,6 +23,7 @@ use shared::event::ServerEvent;
 
 use crate::auth::{Authorized, perm};
 use crate::origin::SameOrigin;
+use crate::reference::Routes;
 use crate::socket::{Next, Source};
 use crate::state::AppState;
 
@@ -30,10 +31,21 @@ use crate::state::AppState;
 /// pinged.
 const KEEP_ALIVE: std::time::Duration = crate::socket::PING;
 
-pub fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/events", get(stream))
-        .route("/events/socket", get(socket))
+pub fn routes() -> Routes {
+    let view = Access::Token(Permission::HostView);
+    Routes::new("Events")
+        .get(
+            "/events",
+            view,
+            "Every server event as server-sent events, for API clients",
+            stream,
+        )
+        .get(
+            "/events/socket",
+            view,
+            "The same events over a WebSocket, as the browser gets them; send {\"watch\":\"metrics\"} for resource figures",
+            socket,
+        )
 }
 
 async fn socket(

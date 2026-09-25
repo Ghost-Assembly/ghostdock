@@ -9,17 +9,18 @@
 //!
 //! The cost, stated plainly: `vi` and `top` will not work.
 
-use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::response::Response;
-use axum::routing::get;
 use futures::{SinkExt, StreamExt};
 use shared::logs::{LogLine, Stream};
+use shared::reference::Access;
+use shared::token::Permission;
 
 use crate::auth::{Authorized, perm};
 use crate::error::ApiError;
 use crate::origin::SameOrigin;
+use crate::reference::Routes;
 use crate::state::AppState;
 
 /// The shell to run.
@@ -29,12 +30,20 @@ use crate::state::AppState;
 /// than one without line editing.
 const SHELL: &str = "/bin/sh";
 
-pub fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/hosts/{host_id}/containers/{id}/exec", get(open))
-        .route(
+pub fn routes() -> Routes {
+    let shell = Access::Token(Permission::ShellOpen);
+    Routes::new("Shell")
+        .get(
+            "/hosts/{host_id}/containers/{id}/exec",
+            shell,
+            "A line-oriented shell in a container over a WebSocket",
+            open,
+        )
+        .post(
             "/hosts/{host_id}/containers/{id}/exec/run",
-            axum::routing::post(run),
+            shell,
+            "Runs one command in a container and returns its output; the command is audited",
+            run,
         )
 }
 

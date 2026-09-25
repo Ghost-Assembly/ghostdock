@@ -4,21 +4,33 @@
 //! nothing here to decide who may manage whom; the rules are only the ones
 //! that keep the instance from ending up with no one able to sign in.
 
+use axum::Json;
 use axum::extract::{Path, State};
-use axum::routing::{delete, get};
-use axum::{Json, Router};
 use shared::auth::{Account, Credentials};
+use shared::reference::Access;
 use store::users::UserRow;
 
 use crate::auth::Principal;
 use crate::error::ApiError;
+use crate::reference::Routes;
 use crate::revocation::Revocation;
 use crate::state::AppState;
 
-pub fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/users", get(list).post(create))
-        .route("/users/{id}", delete(remove))
+pub fn routes() -> Routes {
+    Routes::new("Accounts")
+        .get("/users", Access::Session, "Every account", list)
+        .post(
+            "/users",
+            Access::Session,
+            "Adds an account with a username and password",
+            create,
+        )
+        .delete(
+            "/users/{id}",
+            Access::Session,
+            "Removes another account and ends its sessions and tokens",
+            remove,
+        )
 }
 
 fn account(row: &UserRow, caller: i64) -> Account {

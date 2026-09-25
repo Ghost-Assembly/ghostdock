@@ -3,9 +3,8 @@
 //! An importer on top of ordinary registration: every stack it creates is a
 //! plain Git-backed stack, exactly as if it had been added by hand.
 
+use axum::Json;
 use axum::extract::{Path, State};
-use axum::routing::post;
-use axum::{Json, Router};
 use domain::discovery::{DEFAULT_PATTERN, stack_name};
 use domain::glob::Pattern;
 use shared::deployment::RegisteredStack;
@@ -14,15 +13,30 @@ use shared::source::{
 };
 use store::hosts::LOCAL_HOST_ID;
 
+use shared::reference::Access;
+use shared::token::Permission;
+
 use crate::auth::{Authorized, perm};
 use crate::error::ApiError;
+use crate::reference::Routes;
 use crate::runner::RunError;
 use crate::state::AppState;
 
-pub fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/repos/{id}/discover", post(discover))
-        .route("/repos/{id}/import", post(import))
+pub fn routes() -> Routes {
+    let create = Access::Token(Permission::StacksCreate);
+    Routes::new("Sources")
+        .post(
+            "/repos/{id}/discover",
+            create,
+            "Finds compose files in a repository at a ref, and which are registered already",
+            discover,
+        )
+        .post(
+            "/repos/{id}/import",
+            create,
+            "Registers the chosen compose files found by discovery as stacks",
+            import,
+        )
 }
 
 async fn discover(

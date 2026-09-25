@@ -1,19 +1,36 @@
 //! What is waiting, and whether to apply it without being asked.
 
+use axum::Json;
 use axum::extract::{Path, State};
-use axum::routing::{get, post, put};
-use axum::{Json, Router};
+use shared::reference::Access;
+use shared::token::Permission;
 use shared::update::{AutoApply, StackUpdate, UpdateStatus};
 
 use crate::auth::{Authorized, perm};
 use crate::error::ApiError;
+use crate::reference::Routes;
 use crate::state::AppState;
 
-pub fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/hosts/{host_id}/updates", get(list))
-        .route("/stacks/{id}/check", post(check_now))
-        .route("/stacks/{id}/auto-apply", put(set_auto_apply))
+pub fn routes() -> Routes {
+    Routes::new("Updates")
+        .get(
+            "/hosts/{host_id}/updates",
+            Access::Token(Permission::HostView),
+            "Every registered stack with what update is waiting and why",
+            list,
+        )
+        .post(
+            "/stacks/{id}/check",
+            Access::Token(Permission::UpdatesCheck),
+            "Checks one stack for new commits and image digests now",
+            check_now,
+        )
+        .put(
+            "/stacks/{id}/auto-apply",
+            Access::Token(Permission::UpdatesAutoApply),
+            "Turns deploying a stack's updates as soon as they are found on or off",
+            set_auto_apply,
+        )
 }
 
 /// Every stack with what is waiting for it.

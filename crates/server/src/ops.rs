@@ -1,14 +1,16 @@
 //! Reading logs and reclaiming space.
 
+use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::routing::get;
-use axum::{Json, Router};
 use serde::Deserialize;
 use shared::cleanup::{CleanupPreview, CleanupRequest, CleanupResult, CleanupScope};
 use shared::logs::Logs;
+use shared::reference::Access;
+use shared::token::Permission;
 
 use crate::auth::{Authorized, perm};
 use crate::error::ApiError;
+use crate::reference::Routes;
 use crate::state::AppState;
 
 /// Lines returned when the caller does not say.
@@ -25,16 +27,46 @@ pub struct LogQuery {
     tail: Option<usize>,
 }
 
-pub fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/hosts/{host_id}/containers/{id}/logs", get(logs))
-        .route("/hosts/{host_id}/containers/{id}/logs.txt", get(logs_text))
-        .route("/hosts/{host_id}/containers/{id}/logs/follow", get(follow))
-        .route(
-            "/hosts/{host_id}/containers/{id}/logs/socket",
-            get(follow_socket),
+pub fn routes() -> Routes {
+    let logs_view = Access::Token(Permission::LogsView);
+    Routes::new("Logs")
+        .get(
+            "/hosts/{host_id}/containers/{id}/logs",
+            logs_view,
+            "A container's latest output: ?tail=<lines>, default 500, at most 5000",
+            logs,
         )
-        .route("/hosts/{host_id}/cleanup", get(preview).post(run_cleanup))
+        .get(
+            "/hosts/{host_id}/containers/{id}/logs.txt",
+            logs_view,
+            "The same output as a plain-text download",
+            logs_text,
+        )
+        .get(
+            "/hosts/{host_id}/containers/{id}/logs/follow",
+            logs_view,
+            "New output as server-sent events: line for each line, end when the container stops",
+            follow,
+        )
+        .get(
+            "/hosts/{host_id}/containers/{id}/logs/socket",
+            logs_view,
+            "New output over a WebSocket, as the browser follows it",
+            follow_socket,
+        )
+        .area("Cleanup")
+        .get(
+            "/hosts/{host_id}/cleanup",
+            Access::Token(Permission::HostView),
+            "What cleanup would remove: unused images and stray containers, with sizes",
+            preview,
+        )
+        .post(
+            "/hosts/{host_id}/cleanup",
+            Access::Token(Permission::CleanupRun),
+            "Removes one scope of what the preview lists, re-read at the time",
+            run_cleanup,
+        )
 }
 
 async fn logs(

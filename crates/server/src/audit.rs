@@ -1,19 +1,26 @@
 //! Recording what was done, and showing it.
 
+use axum::Json;
 use axum::extract::State;
-use axum::routing::get;
-use axum::{Json, Router};
 use shared::audit::AuditEntry;
+use shared::reference::Access;
+use shared::token::Permission;
 
 use crate::auth::{Authorized, Principal, perm};
 use crate::error::ApiError;
+use crate::reference::Routes;
 use crate::state::AppState;
 
 /// How many entries the activity view returns.
 const RECENT: i64 = 200;
 
-pub fn routes() -> Router<AppState> {
-    Router::new().route("/audit", get(recent))
+pub fn routes() -> Routes {
+    Routes::new("Activity").get(
+        "/audit",
+        Access::Token(Permission::ActivityView),
+        "The latest 200 entries of who did what, newest first",
+        recent,
+    )
 }
 
 async fn recent(
