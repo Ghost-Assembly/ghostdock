@@ -452,16 +452,29 @@ impl Client {
     /// can be hundreds of megabytes, and sending it to a phone to find the
     /// last twenty lines helps nobody.
     pub async fn container_logs(&self, id: &str, tail: usize) -> Result<shared::logs::Logs> {
+        self.container_logs_since(id, tail, None).await
+    }
+
+    /// As [`Client::container_logs`], from `since` (Unix seconds) onward
+    /// when given.
+    pub async fn container_logs_since(
+        &self,
+        id: &str,
+        tail: usize,
+        since: Option<i64>,
+    ) -> Result<shared::logs::Logs> {
         use futures::StreamExt as _;
 
-        let options = bollard::query_parameters::LogsOptionsBuilder::new()
+        let mut options = bollard::query_parameters::LogsOptionsBuilder::new()
             .stdout(true)
             .stderr(true)
             .timestamps(true)
-            .tail(&tail.to_string())
-            .build();
+            .tail(&tail.to_string());
+        if let Some(since) = since.and_then(|s| i32::try_from(s).ok()) {
+            options = options.since(since);
+        }
 
-        let mut stream = self.inner.logs(id, Some(options));
+        let mut stream = self.inner.logs(id, Some(options.build()));
         let mut assembled = logs::Lines::default();
         let mut lines = Vec::new();
         while let Some(chunk) = stream.next().await {

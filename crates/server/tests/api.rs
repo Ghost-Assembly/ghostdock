@@ -2666,3 +2666,82 @@ async fn any_valid_token_may_read_the_reference_and_no_one_else() {
     let (status, _) = forged.send("GET", "/api/v1/reference", None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+// ---- logs across containers ----------------------------------------------
+
+const ACROSS: [&str; 3] = [
+    "/api/v1/hosts/1/logs",
+    "/api/v1/hosts/1/logs.txt",
+    "/api/v1/hosts/1/logs/socket",
+];
+
+#[tokio::test]
+async fn reading_logs_across_containers_needs_logs_view() {
+    let mut c = Client::signed_in().await;
+    let mut viewer = c.with_token("no logs", &["host.view"]).await;
+    for path in ACROSS {
+        let uri = format!("{path}?containers=web-1");
+        let (status, body) = viewer.send("GET", &uri, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {body}");
+        assert_eq!(body["code"], json!("missing_permission"), "{uri}");
+    }
+    let mut reader = c.with_token("logs", &["logs.view"]).await;
+    let (status, body) = reader
+        .send("GET", "/api/v1/hosts/1/logs?containers=web-1", None)
+        .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "no daemon: {body}");
+}
+
+#[tokio::test]
+async fn logs_across_containers_need_exactly_one_selection() {
+    let mut c = Client::signed_in().await;
+    for query in [
+        "",
+        "?all&stack=1",
+        "?stack=1&containers=a",
+        "?all=false",
+        "?stack=blog",
+        "?containers=",
+        "?containers=a%26all%3D1",
+        "?containers=..%2Fx",
+        "?containers=a,b%20c",
+    ] {
+        for path in ["/api/v1/hosts/1/logs", "/api/v1/hosts/1/logs.txt"] {
+            let uri = format!("{path}{query}");
+            let (status, body) = c.send("GET", &uri, None).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+            assert!(body["message"].as_str().is_some_and(|m| !m.is_empty()));
+        }
+    }
+    // Well formed, so on to the daemon, which these tests do not have.
+    for query in ["?all", "?all=true", "?stack=1", "?containers=a,b.c,d_e-1"] {
+        let uri = format!("/api/v1/hosts/1/logs{query}");
+        let (status, body) = c.send("GET", &uri, None).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{uri}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn more_than_fifty_containers_are_refused_with_the_reason() {
+    let mut c = Client::signed_in().await;
+    let names: Vec<String> = (0..51).map(|i| format!("c{i}")).collect();
+    let uri = format!("/api/v1/hosts/1/logs?containers={}", names.join(","));
+    let (status, body) = c.send("GET", &uri, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(message.contains("50"), "{message}");
+
+    let names: Vec<String> = (0..50).map(|i| format!("c{i}")).collect();
+    let uri = format!("/api/v1/hosts/1/logs?containers={}", names.join(","));
+    let (status, _) = c.send("GET", &uri, None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "fifty is allowed");
+}
+
+#[tokio::test]
+async fn logs_across_an_unknown_host_are_not_found() {
+    let mut c = Client::signed_in().await;
+    let (status, _) = c
+        .send("GET", "/api/v1/hosts/99/logs?containers=a", None)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

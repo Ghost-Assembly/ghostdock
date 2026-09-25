@@ -823,6 +823,7 @@ name = "domain"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "chrono",
  "shared",
  "thiserror 2.0.20",
 ]
