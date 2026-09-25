@@ -28,6 +28,47 @@ pub enum Error {
     Api(#[from] bollard::errors::Error),
 }
 
+/// What kind of failure an [`Error`] is, for a caller deciding how to
+/// report it without knowing bollard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    /// The daemon has no such container, image or exec.
+    NotFound,
+    /// The request conflicts with the object's state, such as running a
+    /// command in a container that is not running.
+    Conflict,
+    /// The daemon could not be reached or failed to answer.
+    Unavailable,
+}
+
+impl Error {
+    #[must_use]
+    pub fn kind(&self) -> ErrorKind {
+        match self {
+            Self::Api(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404,
+                ..
+            }) => ErrorKind::NotFound,
+            Self::Api(bollard::errors::Error::DockerResponseServerError {
+                status_code: 409,
+                ..
+            }) => ErrorKind::Conflict,
+            _ => ErrorKind::Unavailable,
+        }
+    }
+
+    /// The daemon's own explanation, when it gave one.
+    #[must_use]
+    pub fn daemon_message(&self) -> Option<&str> {
+        match self {
+            Self::Api(bollard::errors::Error::DockerResponseServerError { message, .. }) => {
+                Some(message.as_str())
+            }
+            _ => None,
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Most output kept from one command, in bytes. Past it the command's

@@ -2133,6 +2133,53 @@ async fn running_a_command_needs_shell_open_and_a_daemon() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
+// ---- the daemon's answers -------------------------------------------------
+
+#[tokio::test]
+async fn a_container_the_daemon_does_not_have_is_not_found() {
+    // Not "the daemon is unreachable": it answered, and the answer is no.
+    let Ok(docker) = docker::Client::connect() else {
+        eprintln!("SKIPPED: no Docker daemon reachable");
+        return;
+    };
+    if docker.version().await.is_err() {
+        eprintln!("SKIPPED: no Docker daemon reachable");
+        return;
+    }
+    let store = Store::open_in_memory().await.expect("store");
+    let root = tempfile::tempdir().expect("temp dir");
+    let mut c = Client {
+        router: app::build(AppState::new(store, Some(docker), root.path()), false, None),
+        cookie: None,
+        bearer: None,
+        _stacks_root: root,
+    };
+    c.send(
+        "POST",
+        "/api/v1/auth/bootstrap",
+        Some(Client::credentials("admin", PASSWORD)),
+    )
+    .await;
+
+    let missing = "ghostdocktest-no-such-container";
+    let (status, body) = c
+        .send(
+            "GET",
+            &format!("/api/v1/hosts/1/containers/{missing}/logs"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, body) = c
+        .send(
+            "POST",
+            &format!("/api/v1/hosts/1/containers/{missing}/exec/run"),
+            Some(json!({ "command": "true", "timeout_seconds": 5 })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+}
+
 // ---- operations on what was deployed --------------------------------------
 
 fn daemon_available() -> bool {

@@ -86,8 +86,18 @@ impl From<store::Error> for ApiError {
 
 impl From<docker::Error> for ApiError {
     fn from(e: docker::Error) -> Self {
-        tracing::warn!(error = ?e, "docker call failed");
-        Self::DaemonUnavailable
+        match e.kind() {
+            // The daemon answered; the answer is about what was asked for.
+            docker::ErrorKind::NotFound => Self::NotFound,
+            docker::ErrorKind::Conflict => Self::Conflict(
+                e.daemon_message()
+                    .map_or_else(|| "Docker refused that.".to_owned(), str::to_owned),
+            ),
+            docker::ErrorKind::Unavailable => {
+                tracing::warn!(error = ?e, "docker call failed");
+                Self::DaemonUnavailable
+            }
+        }
     }
 }
 
