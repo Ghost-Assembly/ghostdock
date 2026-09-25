@@ -51,6 +51,7 @@ pub fn group(containers: Vec<Container>) -> Grouped {
                 running_count,
                 total_count,
                 managed: None,
+                icon: None,
             }
         })
         .collect();
@@ -114,6 +115,7 @@ pub fn merge(containers: Vec<Container>, managed: Vec<(String, Managed)>) -> Gro
             running_count: 0,
             total_count: 0,
             managed: Some(managed),
+            icon: None,
         });
     }
 

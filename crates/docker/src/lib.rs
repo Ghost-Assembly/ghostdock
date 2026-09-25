@@ -128,6 +128,14 @@ impl Client {
         Ok(summaries.into_iter().map(map::to_container).collect())
     }
 
+    /// [`Self::list_containers`], each with its labels. The same one call
+    /// to the daemon.
+    pub async fn list_labeled(&self) -> Result<Vec<map::Labeled>> {
+        let options = ListContainersOptionsBuilder::new().all(true).build();
+        let summaries = self.inner.list_containers(Some(options)).await?;
+        Ok(summaries.into_iter().map(map::to_labeled).collect())
+    }
+
     /// The mounts on a container, by id or name.
     ///
     /// Used to inspect GhostDock's own container. Returns `None` when there is

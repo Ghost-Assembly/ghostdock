@@ -783,6 +783,7 @@ mod tests {
 
     fn stack(project: &str, id: Option<i64>, containers: Vec<Container>) -> Stack {
         Stack {
+            icon: None,
             project: project.to_owned(),
             state: StackState::Running,
             running_count: 0,

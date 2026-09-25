@@ -9,6 +9,7 @@ pub mod contract;
 pub mod discovery;
 pub mod glob;
 pub mod health;
+pub mod icon;
 pub mod logs;
 pub mod metrics;
 pub mod sizing;

@@ -61,6 +61,42 @@ pub fn Icon(name: &'static str) -> impl IntoView {
     }
 }
 
+/// What a stack runs, as its software's mark, or else its initials on a
+/// plain tile. Both are drawn by the stylesheet in the ink color: a brand's
+/// own colors would say something about state that is not so. Decorative,
+/// since the stack's name is always beside it.
+#[component]
+pub fn StackIcon(#[prop(into)] name: String, icon: Option<String>) -> impl IntoView {
+    // The server only names bundled icons; anything else is not made into
+    // a path.
+    let icon = icon.filter(|slug| is_slug(slug));
+    let letters = icon.is_none().then(|| monogram(&name));
+    let style = icon
+        .as_ref()
+        .map(|slug| format!("--brand:url(/brand-icons/{slug}.svg)"));
+    view! {
+        <span class="brand" aria-hidden="true" data-icon=icon data-letters=letters style=style></span>
+    }
+}
+
+/// One or two letters for a name: the first of each of its first two
+/// words.
+fn monogram(name: &str) -> String {
+    name.split(|c: char| !c.is_alphanumeric())
+        .filter_map(|word| word.chars().next())
+        .take(2)
+        .flat_map(char::to_uppercase)
+        .collect()
+}
+
+/// A bundled icon's name: lowercase letters and digits, nothing else.
+fn is_slug(slug: &str) -> bool {
+    !slug.is_empty()
+        && slug
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+}
+
 /// The top of a screen: its name, and the way back to the screen before
 /// or the one thing to do from here.
 ///
@@ -76,10 +112,13 @@ pub fn Topbar(
     /// Anything else at the end of the bar, such as a link to add something.
     #[prop(optional)]
     children: Option<Children>,
+    /// Drawn before the title, inside the heading: a stack's icon.
+    #[prop(optional, into)]
+    lead: Option<ViewFn>,
 ) -> impl IntoView {
     view! {
         <header class="topbar">
-            <h1 class="wordmark">{title}</h1>
+            <h1 class="wordmark">{lead.map(|lead| move || lead.run())}{title}</h1>
             {back.map(|href| view! {
                 <a class="topbar-link" href=href>
                     <Icon name="chevron-left" />
@@ -167,11 +206,16 @@ pub fn Row(
     #[prop(optional, into)] count: Option<String>,
     #[prop(optional)] count_icon: Option<&'static str>,
     #[prop(optional)] asides: Vec<Aside>,
+    /// A stack's icon before the name; the icon itself may be none, and the
+    /// name's initials then stand in.
+    #[prop(optional)]
+    brand: Option<Option<String>>,
     #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView {
+    let brand = brand.map(|icon| view! { <StackIcon name=name.clone() icon /> });
     let inner = view! {
         <span class="row-bar" data-state=state></span>
-        <span class=if ident { "row-name row-id" } else { "row-name" }>{name}</span>
+        <span class=if ident { "row-name row-id" } else { "row-name" }>{brand}{name}</span>
         {detail.map(|detail| view! {
             <span class="row-detail">{detail}</span>
         })}
@@ -253,6 +297,26 @@ mod tests {
         assert_eq!(list, ["b", "c"]);
         toggle(&mut list, "a");
         assert_eq!(list, ["b", "c", "a"]);
+    }
+
+    #[test]
+    fn a_monogram_is_the_first_letters_of_the_first_two_words() {
+        assert_eq!(monogram("nginx"), "N");
+        assert_eq!(monogram("my-blog"), "MB");
+        assert_eq!(monogram("Home media server"), "HM");
+        assert_eq!(monogram("ghostdock_e2e_multilogs"), "GE");
+        assert_eq!(monogram("Filler 12"), "F1");
+        assert_eq!(monogram("--édition--"), "É");
+        assert_eq!(monogram(" -- "), "");
+    }
+
+    #[test]
+    fn only_a_plain_slug_becomes_a_file_path() {
+        assert!(is_slug("nginx"));
+        assert!(is_slug("zigbee2mqtt"));
+        for bad in ["", "../x", "Nginx", "a b", "a/b", "x.svg", "a\"b"] {
+            assert!(!is_slug(bad), "{bad}");
+        }
     }
 
     #[test]

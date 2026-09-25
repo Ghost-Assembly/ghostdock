@@ -2745,3 +2745,85 @@ async fn logs_across_an_unknown_host_are_not_found() {
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+// ---- stack icons ------------------------------------------------------------
+
+#[tokio::test]
+async fn the_board_names_each_stack_s_icon_from_what_it_runs() {
+    let Ok(docker) = docker::Client::connect() else {
+        eprintln!("SKIPPED: no Docker daemon reachable");
+        return;
+    };
+    if docker.version().await.is_err() {
+        eprintln!("SKIPPED: no Docker daemon reachable");
+        return;
+    }
+    let store = Store::open_in_memory().await.expect("store");
+    let root = tempfile::tempdir().expect("temp dir");
+    let mut c = Client {
+        router: app::build(AppState::new(store, Some(docker), root.path()), false, None),
+        cookie: None,
+        bearer: None,
+        _stacks_root: root,
+    };
+    c.send(
+        "POST",
+        "/api/v1/auth/bootstrap",
+        Some(Client::credentials("admin", PASSWORD)),
+    )
+    .await;
+
+    // One known by its image, one by a label on a plain image, and one
+    // with nothing to go on.
+    let fixtures = [
+        (
+            "ghostdocktest-icon-web",
+            "services:\n  web:\n    image: nginx:alpine\n",
+        ),
+        (
+            "ghostdocktest-icon-labeled",
+            "services:\n  box:\n    image: alpine:3.22\n    command: [\"sleep\", \"3600\"]\n    labels:\n      ghostdock.icon: redis\n",
+        ),
+        (
+            "ghostdocktest-icon-plain",
+            "services:\n  box:\n    image: alpine:3.22\n    command: [\"sleep\", \"3600\"]\n",
+        ),
+    ];
+    let mut ids = Vec::new();
+    for (name, yaml) in fixtures {
+        let (status, stack) = c
+            .send(
+                "POST",
+                "/api/v1/hosts/1/stacks",
+                Some(Client::stack(name, yaml)),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{stack}");
+        ids.push(stack["id"].as_i64().unwrap());
+    }
+    let mut deployed = Vec::new();
+    for id in &ids {
+        deployed.push(c.operate(*id, "deploy").await);
+    }
+    let (status, board) = c.send("GET", "/api/v1/hosts/1/stacks", None).await;
+    for id in &ids {
+        c.operate(*id, "down").await;
+    }
+
+    for done in &deployed {
+        assert_eq!(done["status"], json!("succeeded"), "{}", done["log"]);
+    }
+    assert_eq!(status, StatusCode::OK, "{board}");
+    let icon = |project: &str| {
+        board
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["project"] == json!(project))
+            .map(|s| s["icon"].clone())
+            .unwrap_or_else(|| panic!("{project} is on the board: {board}"))
+    };
+    assert_eq!(icon("ghostdocktest-icon-web"), json!("nginx"));
+    assert_eq!(icon("ghostdocktest-icon-labeled"), json!("redis"));
+    assert_eq!(icon("ghostdocktest-icon-plain"), Value::Null);
+}

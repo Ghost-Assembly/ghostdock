@@ -26,7 +26,8 @@ mkdir -p "$SHOTS"
 
 # Only what these tests create. Other containers on the host are not this
 # script's business.
-PROJECTS=(demo-app broken blog shellbox livebox ticker chatter ghostdock-e2e-multilogs)
+PROJECTS=(demo-app broken blog shellbox livebox ticker chatter ghostdock-e2e-multilogs
+  ghostdock-e2e-icons-web ghostdock-e2e-icons-plain)
 
 # Stopped containers the cleanup test creates for itself to remove.
 CLEANUP_FIXTURES=(ghostdock-e2e-gone-web-1 ghostdock-e2e-by-hand)
@@ -267,6 +268,12 @@ test_multilogs() {
   run multilogs
 }
 
+test_icons() {
+  # Registers and deploys its own stacks through the API.
+  start_fresh icons
+  run icons
+}
+
 test_live() {
   # The live test changes a running stack from outside GhostDock.
   start_fresh live
@@ -292,7 +299,7 @@ test_host() {
 
 # With no arguments, everything; otherwise just the named tests, in order.
 TESTS=("$@")
-[[ ${#TESTS[@]} -eq 0 ]] && TESTS=(smoke perf deploy accounts tokens offline stall git discover shell live logs multilogs cleanup roam tabs jank layout host a11y mcp)
+[[ ${#TESTS[@]} -eq 0 ]] && TESTS=(smoke perf deploy accounts tokens offline stall git discover shell live logs multilogs icons cleanup roam tabs jank layout host a11y mcp)
 for t in "${TESTS[@]}"; do
   "test_$t"
 done

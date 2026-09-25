@@ -176,7 +176,15 @@ async fn look(
         .map(|path| {
             let name = stack_name(&path).unwrap_or_else(|| repo_name(&repo.url));
             let status = status_of(&path, &name, repo.id, &registered);
-            Discovered { path, name, status }
+            // By name only: reading every file found to see what it runs
+            // would make a look at a large repository slow.
+            let icon = domain::icon::from_name(&name).map(str::to_owned);
+            Discovered {
+                path,
+                name,
+                status,
+                icon,
+            }
         })
         .collect();
 

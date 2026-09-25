@@ -114,6 +114,10 @@ pub struct Discovered {
     /// The name it would be registered under.
     pub name: String,
     pub status: DiscoveredStatus,
+    /// The bundled icon its name suggests, as for a stack; the file itself
+    /// is not read.
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
