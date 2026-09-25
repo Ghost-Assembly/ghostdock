@@ -12,7 +12,6 @@ use serde::de::DeserializeOwned;
 use shared::audit::AuditEntry;
 use shared::auth::{Account, AuthStatus, Credentials, PasswordChange, User};
 use shared::cleanup::{CleanupPreview, CleanupRequest, CleanupResult, CleanupScope};
-use shared::container::Container;
 use shared::deployment::{Deployment, DeploymentDetail, NewStack, RegisteredStack, StackCompose};
 use shared::host::HostInfo;
 use shared::logs::Logs;
@@ -233,11 +232,6 @@ pub async fn host_info() -> Result<HostInfo> {
 
 pub async fn stacks() -> Result<Vec<Stack>> {
     get(&format!("/hosts/{HOST}/stacks")).await
-}
-
-/// Every container on the host, without the stacks worked out from them.
-pub async fn containers() -> Result<Vec<Container>> {
-    get(&format!("/hosts/{HOST}/containers")).await
 }
 
 // ---- stacks -----------------------------------------------------------

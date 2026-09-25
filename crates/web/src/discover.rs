@@ -8,7 +8,7 @@ use shared::source::{DiscoverRequest, DiscoveredStatus, Discovery, ImportRequest
 use crate::api;
 use crate::confirm::Confirm;
 use crate::screen::Screen;
-use crate::ui::{ErrorNotice, Field, Row, Topbar, route_id, toggle};
+use crate::ui::{ErrorNotice, Field, Row, StackIcon, Topbar, route_id, toggle};
 
 #[component]
 pub fn DiscoverStacks() -> impl IntoView {
@@ -222,7 +222,10 @@ pub fn DiscoverStacks() -> impl IntoView {
                                         chosen.update(|list| toggle(list, toggle_path.clone()));
                                     }
                                 />
-                                <span class="check-name">{f.name.clone()}</span>
+                                <span class="check-name">
+                                    <StackIcon name=f.name.clone() icon=f.icon.clone() />
+                                    {f.name.clone()}
+                                </span>
                                 <span class="check-detail">{detail}</span>
                             </label>
                         }

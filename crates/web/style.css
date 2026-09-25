@@ -340,6 +340,40 @@ body {
   font-family: var(--mono);
 }
 
+/* What a stack runs, before its name: the software's mark (Simple Icons,
+ * vendored in brand-icons/ and loaded only where one is shown), or else its
+ * initials on a plain tile. The mark is a mask filled with the ink, never
+ * the brand's colors: color means state. */
+.brand {
+  display: inline-grid;
+  place-items: center;
+  width: 1.375rem;
+  height: 1.375rem;
+  margin-right: 0.5rem;
+  vertical-align: middle;
+}
+
+.brand[data-icon] {
+  background: var(--ink);
+  -webkit-mask: var(--brand) center / contain no-repeat;
+  mask: var(--brand) center / contain no-repeat;
+}
+
+.brand[data-letters] {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--raised);
+  color: var(--ink-dim);
+  font-family: var(--sans);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  line-height: 1;
+}
+
+.brand[data-letters]::before {
+  content: attr(data-letters);
+}
+
 .row-detail {
   grid-column: 2;
   color: var(--ink-dim);

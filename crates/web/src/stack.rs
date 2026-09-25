@@ -19,7 +19,7 @@ use crate::load::Load;
 use crate::resources::{Charts, ContainerFigureRows, RangePicker};
 use crate::screen::Screen;
 use crate::status::Outcome;
-use crate::ui::{ErrorNotice, OutputLine, Row, Topbar, route_id};
+use crate::ui::{ErrorNotice, OutputLine, Row, StackIcon, Topbar, route_id};
 
 /// Lines kept in the live pane.
 ///
@@ -46,6 +46,8 @@ pub fn StackDetail() -> impl IntoView {
     let resources_target = Memo::new(move |_| Target::Stack(resources_project.get()));
     let history = RwSignal::new(Load::<Vec<Deployment>>::Loading);
     let containers = RwSignal::new(Load::<Vec<Container>>::Loading);
+    // The stack's icon, once read: `Some(None)` when it has none.
+    let icon = RwSignal::new(None::<Option<String>>);
     // Reading the stack failed; cleared by the next read that works.
     let load_error = RwSignal::new(None::<String>);
     // Something asked of the server failed.
@@ -81,8 +83,8 @@ pub fn StackDetail() -> impl IntoView {
     let finished = StoredValue::new(0_i64);
 
     // Only this stack's containers, which need the stack's name to find.
-    // There is no per-stack route for them; the host's plain list is the
-    // smallest read that has them, without working out every other stack.
+    // There is no per-stack route for them; the host's stacks are one read
+    // that has them, already sorted, and the stack's icon with them.
     let read_containers = move || {
         let mine = latest_containers.get_value() + 1;
         latest_containers.set_value(mine);
@@ -90,18 +92,15 @@ pub fn StackDetail() -> impl IntoView {
             return;
         };
         screen.load(async move {
-            let answer = api::containers().await;
+            let answer = api::stacks().await;
             if latest_containers.try_get_value() != Some(mine) {
                 return;
             }
             containers.set(match answer {
                 Ok(all) => {
-                    let mut own: Vec<Container> = all
-                        .into_iter()
-                        .filter(|c| c.compose.as_ref().is_some_and(|m| m.project == slug))
-                        .collect();
-                    own.sort_by(|a, b| a.name.cmp(&b.name));
-                    Load::Ready(own)
+                    let own = all.into_iter().find(|s| s.project == slug);
+                    icon.set(Some(own.as_ref().and_then(|s| s.icon.clone())));
+                    Load::Ready(own.map(|s| s.containers).unwrap_or_default())
                 }
                 Err(e) => Load::Failed(e.message),
             });
@@ -320,6 +319,12 @@ pub fn StackDetail() -> impl IntoView {
                 stack.with(|s| s.as_ref().map_or_else(|| "Stack".to_owned(), |s| s.name.clone()))
             })
             back="/"
+            lead=move || {
+                icon.get().map(|icon| {
+                    let name = stack.with(|s| s.as_ref().map(|s| s.name.clone()).unwrap_or_default());
+                    view! { <StackIcon name icon /> }
+                })
+            }
         />
 
         <ErrorNotice error=load_error />

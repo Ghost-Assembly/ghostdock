@@ -249,6 +249,7 @@ struct RowData {
     detail: String,
     count: String,
     state: &'static str,
+    icon: Option<String>,
 }
 
 impl RowData {
@@ -269,6 +270,7 @@ impl RowData {
             detail,
             count: format!("{}/{}", stack.running_count, stack.total_count),
             state: state_key(stack.state),
+            icon: stack.icon.clone(),
         }
     }
 }
@@ -323,6 +325,7 @@ fn StackRows(rows: Memo<Vec<RowData>>, figures: RwSignal<Option<Now>>) -> impl I
                     href=row.id.map(|id| format!("/stacks/{id}"))
                     detail=row.detail
                     count=row.count
+                    brand=row.icon
                 >
                     <RowFigures figures project=row.project />
                 </Row>

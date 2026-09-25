@@ -142,6 +142,26 @@ browser. Served over HTTPS, it also opens when the server cannot be reached
 and says so, rather than showing a browser error; browsers allow that only on
 HTTPS or `localhost`. Nothing from the API is ever stored on the device.
 
+### Stack icons
+
+Each stack shows the icon of the software it runs, worked out from its
+containers' images: `postgres`, `lscr.io/linuxserver/jellyfin` and
+`ghcr.io/home-assistant/home-assistant` are all recognized, whatever the
+registry or tag. A database or proxy gives way to the app it serves. To choose
+one yourself, label any service:
+
+```yaml
+labels:
+  ghostdock.icon: nextcloud
+```
+
+An Unraid (`net.unraid.docker.icon`) or Homepage (`homepage.icon`) icon label
+is used too, when the file it names is one GhostDock has. A stack with no match
+shows its initials. The icons are about 150 monochrome marks from
+[Simple Icons](https://simpleicons.org) (CC0), shipped with GhostDock and drawn
+in the text color; nothing is fetched from elsewhere. The names a label can use
+are the file names in `crates/web/brand-icons/`.
+
 ### Keep the key
 
 On first run GhostDock writes `secret.key` into the data directory. It encrypts
