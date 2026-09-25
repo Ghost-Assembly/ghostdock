@@ -28,6 +28,10 @@ UI a reconciler with buttons. GhostDock is built around that:
 - **See what everything uses.** CPU, memory, network and disk for the host,
   each stack and each container, live and over a year; and the limits a
   container's history supports, with the evidence and compose lines to paste.
+- **Know when something stops answering.** Uptime checks request a URL,
+  connect to a port, or follow a container's health, and alert a webhook or
+  ntfy when one goes down, comes back or degrades, or when CPU, memory or
+  disk stays too high.
 - **Keep the host tidy.** Unused images and stopped containers nobody manages
   are shown before anything is removed.
 - **Drive it from a phone or a desktop.** The phone layout is the primary
@@ -165,8 +169,9 @@ are the file names in `crates/web/brand-icons/`.
 ### Keep the key
 
 On first run GhostDock writes `secret.key` into the data directory. It encrypts
-stored Git credentials and stack environment variables. Back it up with the
-database: without it, those secrets cannot be read and must be entered again.
+stored Git credentials, stack environment variables and alert channels. Back it
+up with the database: without it, those secrets cannot be read and must be
+entered again.
 To manage it yourself instead, set `GHOSTDOCK_SECRET_KEY` to 32 random bytes in
 base64 (`openssl rand -base64 32`).
 
@@ -182,12 +187,57 @@ Repository URLs are `https`, `http`, `ssh`, `git` or `file` URLs, or
 `user@host:path`. A password never goes in the URL: add it under Credentials
 and attach it to the repository.
 
+### Uptime checks and alerts
+
+Host → Uptime → Add a check. A check is one of:
+
+- **HTTP(S):** a URL answers with an accepted status (200–399 unless you say
+  otherwise), within its timeout, and optionally with some text in the first
+  MiB of the page. An HTTPS check is degraded 14 days before its certificate
+  expires and down once it has.
+- **TCP:** `host:port` accepts a connection.
+- **Container:** a container, by name, is running and not unhealthy. It needs
+  no probe: Docker's own events rerun it the moment the container changes.
+
+A check runs every 60 seconds unless set otherwise (never more often than
+every 20), and is down after 2 failures in a row, which opens an incident
+until it answers again. It can also be degraded by answering more slowly than
+a limit you set. Its page shows latency and uptime over time, and its
+incidents; a check linked to a stack is listed on the stack's page, and marks
+the stack's row on the board while it is down. Each run is kept for a week in
+`metrics.db`, and hourly figures for a year.
+
+Checks run from GhostDock's own network, not from inside your stacks' networks.
+A service reachable only inside a stack's network needs a container check or a
+published port.
+
+Settings → Alerts sets where alerts go: a **webhook**, which gets a JSON POST
+of `{ kind, subject, state, message, at, url }`, or an **ntfy** topic URL,
+which gets the message with a title, priority and tags. Every channel gets
+every alert, from checks that go down, come back or degrade (unless a check's
+alerts are turned off), and from resource rules: CPU, memory or disk of the
+host, a container or a stack staying above a percentage for some minutes.
+A rule alerts once when it starts and once when it clears. Each delivery is
+retried three times, and the last 200 are listed with how they went; "Send
+test" tries a channel at once.
+
+A channel's URL and token are write-only, like every other secret: stored
+encrypted, and never shown, returned by the API or written to the activity
+log again. GhostDock shows only the channel's name, kind and the host its URL
+points at. For the same reason channels are not offered over MCP: a URL or
+token typed into a conversation ends up in its transcript.
+
+Over the API, seeing checks, incidents, channels and rules needs `host.view`;
+changing checks needs `checks.manage`, and channels and rules
+`alerts.manage`.
+
 ### API tokens
 
 Settings → API tokens issues a token for another program, such as a script or
 an AI assistant. Each token carries only the permissions ticked when it was
 made: `host.view`, `logs.view`, `stacks.deploy`, `stacks.restart`,
-`stacks.take_down`, `env.write`, `shell.open` and so on, one per action.
+`stacks.take_down`, `env.write`, `shell.open`, `checks.manage`, `alerts.manage`
+and so on, one per action.
 Nothing is granted by default, and no token can manage accounts or other
 tokens. Send it as a header:
 
@@ -206,8 +256,9 @@ The server generates it from the routes it mounts, so it is always current.
 ### Claude Code, over MCP
 
 GhostDock is also an MCP server, at `/mcp`, so Claude Code can list and inspect
-stacks, deploy and restart them, read logs, check for updates and more. It
-offers exactly the tools the token's permissions allow: a token with only
+stacks, deploy and restart them, read logs, check for updates, manage uptime
+checks and more. It offers exactly the tools the token's permissions allow: a
+token with only
 `host.view` can look but not touch. When a token is created, GhostDock shows the
 command to paste:
 
