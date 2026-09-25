@@ -2,7 +2,7 @@
 
 use bollard::container::LogOutput;
 use bytes::Bytes;
-use docker::logs::to_lines;
+use docker::logs::{Lines, MAX_LINE_BYTES, to_lines};
 use shared::logs::Stream;
 
 fn stdout(text: &str) -> LogOutput {
@@ -68,6 +68,91 @@ fn a_tty_container_reports_on_stdout() {
 fn blank_lines_are_dropped_rather_than_padding_the_view() {
     let lines = to_lines(&stdout("one\n\n\ntwo\n"));
     assert_eq!(lines.len(), 2);
+}
+
+fn stderr(text: &str) -> LogOutput {
+    LogOutput::StdErr {
+        message: Bytes::from(text.to_owned()),
+    }
+}
+
+fn texts(lines: &[shared::logs::LogLine]) -> Vec<&str> {
+    lines.iter().map(|l| l.text.as_str()).collect()
+}
+
+#[test]
+fn a_line_split_across_chunks_is_one_line() {
+    // A process writes when it likes; the daemon forwards each write as it
+    // comes, so half a line in one chunk is ordinary.
+    let mut lines = Lines::default();
+    assert!(lines.push(&stdout("downloading lay")).is_empty());
+    assert_eq!(
+        texts(&lines.push(&stdout("er 3\nnext\npart"))),
+        ["downloading layer 3", "next"]
+    );
+    assert_eq!(
+        texts(&lines.finish()),
+        ["part"],
+        "the end of output ends the line"
+    );
+    assert!(lines.finish().is_empty());
+}
+
+#[test]
+fn a_character_split_across_chunks_survives() {
+    let mut lines = Lines::default();
+    let bytes = "café\n".as_bytes();
+    let (head, tail) = bytes.split_at(4); // inside the é
+    assert!(
+        lines
+            .push(&LogOutput::StdOut {
+                message: Bytes::copy_from_slice(head)
+            })
+            .is_empty()
+    );
+    let out = lines.push(&LogOutput::StdOut {
+        message: Bytes::copy_from_slice(tail),
+    });
+    assert_eq!(texts(&out), ["café"]);
+}
+
+#[test]
+fn output_and_errors_are_assembled_apart() {
+    let mut lines = Lines::default();
+    assert!(lines.push(&stdout("out ")).is_empty());
+    let err = lines.push(&stderr("err\n"));
+    assert_eq!(err[0].stream, Stream::Stderr);
+    assert_eq!(texts(&err), ["err"]);
+    let out = lines.push(&stdout("done\n"));
+    assert_eq!(out[0].stream, Stream::Stdout);
+    assert_eq!(texts(&out), ["out done"]);
+}
+
+#[test]
+fn a_continued_line_keeps_its_first_timestamp_only() {
+    // With timestamps on, the daemon prefixes every piece of a long line it
+    // split, not only the first.
+    let mut lines = Lines::default();
+    assert!(
+        lines
+            .push(&stdout("2026-09-23T10:11:12.000000001Z first half"))
+            .is_empty()
+    );
+    let out = lines.push(&stdout("2026-09-23T10:11:12.000000002Z , second half\n"));
+    assert_eq!(out[0].at.as_deref(), Some("2026-09-23T10:11:12.000000001Z"));
+    assert_eq!(out[0].text, "first half, second half");
+}
+
+#[test]
+fn a_line_without_end_is_cut_rather_than_held_forever() {
+    let mut lines = Lines::default();
+    let chunk = "x".repeat(MAX_LINE_BYTES / 4);
+    let mut out = Vec::new();
+    for _ in 0..8 {
+        out.extend(lines.push(&stdout(&chunk)));
+    }
+    assert!(!out.is_empty(), "nothing was let through");
+    assert!(out.iter().all(|l| l.text.len() <= MAX_LINE_BYTES));
 }
 
 #[test]

@@ -196,3 +196,33 @@ fn git_never_reads_the_hosts_own_configuration() {
     assert_eq!(get("GIT_CONFIG_NOSYSTEM"), Some("1"));
     assert_eq!(get("GIT_CONFIG_GLOBAL"), Some("/dev/null"));
 }
+
+#[test]
+fn a_url_or_ref_always_follows_the_end_of_the_options() {
+    // Without the marker, a URL of `--upload-pack=<command>` is an option,
+    // and git runs the command.
+    let url = "https://example.invalid/r.git";
+    let reference = "refs/heads/main";
+    for argv in [
+        command::ls_remote(url, reference),
+        command::fetch(dir(), url, reference),
+    ] {
+        let end = argv
+            .iter()
+            .position(|a| a == "--end-of-options")
+            .unwrap_or_else(|| panic!("no --end-of-options in {argv:?}"));
+        let at = |value: &str| argv.iter().position(|a| a == value).unwrap();
+        assert!(end < at(url), "{argv:?}");
+        assert!(end < at(reference), "{argv:?}");
+    }
+}
+
+#[test]
+fn git_speaks_only_the_protocols_ghostdock_offers() {
+    // `ext::` runs a command, and a submodule may name any transport.
+    let map: std::collections::HashMap<_, _> = command::env(None).into_iter().collect();
+    assert_eq!(
+        map.get("GIT_ALLOW_PROTOCOL").map(String::as_str),
+        Some("file:git:http:https:ssh")
+    );
+}

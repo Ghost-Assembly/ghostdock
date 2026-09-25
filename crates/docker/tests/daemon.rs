@@ -186,6 +186,43 @@ async fn a_command_runs_and_reports_its_output_and_exit_code() {
 }
 
 #[tokio::test]
+async fn a_line_written_in_pieces_arrives_as_one() {
+    if docker(&["info", "--format", "{{.ServerVersion}}"]).is_none() {
+        eprintln!("SKIPPED: no Docker daemon reachable");
+        return;
+    }
+    let client = docker::Client::connect().expect("client");
+    let name = format!("ghostdock-test-pieces-{}", std::process::id());
+    let _cleanup = Removed(name.clone());
+    docker(&["run", "-d", "--name", &name, "alpine:3.22", "sleep", "120"]).expect("run");
+
+    let result = client
+        .run_command(
+            &name,
+            "printf 'half a '; sleep 0.5; printf 'line\\nno newline'",
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("ran");
+    let texts: Vec<_> = result.output.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(texts, ["half a line", "no newline"]);
+
+    // In a shell, output that never gets a newline is still shown.
+    let shell = client.start_shell(&name, "/bin/sh").await.expect("shell");
+    let (mut reader, mut writer) = shell.split();
+    writer
+        .write("printf 'no newline here'\n")
+        .await
+        .expect("write");
+    let shown = tokio::time::timeout(Duration::from_secs(5), reader.next_lines())
+        .await
+        .expect("output within 5s")
+        .expect("the shell is open");
+    let texts: Vec<_> = shown.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(texts, ["no newline here"]);
+}
+
+#[tokio::test]
 async fn a_command_that_floods_its_output_is_cut_off() {
     if docker(&["info", "--format", "{{.ServerVersion}}"]).is_none() {
         eprintln!("SKIPPED: no Docker daemon reachable");

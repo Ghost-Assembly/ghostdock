@@ -7,7 +7,6 @@
 use axum::extract::{Path, State};
 use axum::routing::{delete, get};
 use axum::{Json, Router};
-use domain::auth::hash_password;
 use shared::auth::{Account, Credentials};
 use store::users::UserRow;
 
@@ -52,8 +51,7 @@ async fn create(
             "username must not be empty".to_owned(),
         ));
     }
-    let hash =
-        hash_password(&credentials.password).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let hash = crate::auth::hash_blocking(credentials.password).await?;
     let row = state
         .store
         .user_create(username, &hash)

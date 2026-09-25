@@ -15,6 +15,7 @@ pub mod error;
 pub mod events;
 pub mod exec;
 pub mod hosts;
+pub mod limiter;
 pub mod mcp;
 pub mod metrics;
 pub mod ops;

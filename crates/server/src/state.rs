@@ -33,6 +33,8 @@ pub struct AppState {
     pub revocations: Revocations,
     /// Resource figures: the live hour, and history when a store is given.
     pub sampler: crate::metrics::Sampler,
+    /// Failed sign-ins, so passwords cannot be guessed at full speed.
+    pub login_limiter: crate::limiter::LoginLimiter,
 }
 
 impl AppState {
@@ -64,6 +66,7 @@ impl AppState {
             problems: Arc::new(Vec::new()),
             revocations: Revocations::new(),
             sampler: crate::metrics::Sampler::new(None, crate::metrics::HostPaths::default()),
+            login_limiter: crate::limiter::LoginLimiter::default(),
         }
     }
 }

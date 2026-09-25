@@ -454,6 +454,7 @@ impl Sampler {
         every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         every.tick().await;
         let mut last_prune = 0_i64;
+        let mut rolled_to: Option<i64> = None;
         loop {
             every.tick().await;
             let minute = aligned(std::time::SystemTime::now(), 60) - 60;
@@ -480,10 +481,11 @@ impl Sampler {
             if let Err(e) = store.write_minute(&batch).await {
                 tracing::warn!(error = %e, "could not write a minute of figures");
             }
-            if (minute + 60) % 900 == 0
-                && let Err(e) = store.rollup(minute + 60 - 900, minute + 60).await
-            {
-                tracing::warn!(error = %e, "could not roll up a quarter hour");
+            if let Some((from, to)) = domain::metrics::quarter_due(minute + 60, rolled_to) {
+                match store.rollup(from, to).await {
+                    Ok(_) => rolled_to = Some(to),
+                    Err(e) => tracing::warn!(error = %e, "could not roll up a quarter hour"),
+                }
             }
             if minute - last_prune >= 86_400 {
                 last_prune = minute;
@@ -522,10 +524,13 @@ impl Sampler {
                 }
             };
             for c in containers.into_iter().filter(|c| c.state.is_running()) {
+                // By id: a container recreated under the same name is a new
+                // container, and its stream must not be mistaken for the old
+                // one's, which is about to end.
                 let fresh = streaming
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(c.name.clone());
+                    .insert(c.id.clone());
                 if !fresh {
                     continue;
                 }
@@ -535,7 +540,7 @@ impl Sampler {
                 let project = c.compose.as_ref().map(|m| m.project.clone());
                 let service = c.compose.as_ref().map(|m| m.service.clone());
                 tokio::spawn(async move {
-                    let mut stream = Box::pin(client.stats(&c.name));
+                    let mut stream = Box::pin(client.stats(&c.id));
                     let mut prev: Option<(domain::metrics::Counters, std::time::Instant)> = None;
                     while let Some(Ok(counters)) = stream.next().await {
                         let at = std::time::Instant::now();
@@ -559,7 +564,7 @@ impl Sampler {
                     }
                     set.lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .remove(&c.name);
+                        .remove(&c.id);
                 });
             }
         }

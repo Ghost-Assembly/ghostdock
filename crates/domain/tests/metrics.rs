@@ -318,3 +318,34 @@ fn a_containers_figures_are_its_95th_percentile_and_its_peak() {
         (None, None, None, None)
     );
 }
+
+/// A quarter-hour boundary: 2027-01-15 08:00:00 UTC.
+const QUARTER: i64 = 1_800_000_000;
+
+#[test]
+fn a_quarter_hour_is_rolled_up_once_it_has_ended() {
+    assert_eq!(QUARTER % QUARTER_SECS, 0);
+    // Minutes written up to 10:14 end at 10:15, a quarter boundary.
+    let q = QUARTER;
+    assert_eq!(quarter_due(q, Some(q - 900)), Some((q - 900, q)));
+    // Mid-quarter, with the last one done: nothing.
+    assert_eq!(quarter_due(q + 300, Some(q)), None);
+}
+
+#[test]
+fn a_boundary_missed_by_a_late_minute_is_still_rolled_up() {
+    // The minute loop slips when writing takes long; the boundary it steps
+    // over must not be skipped.
+    let q = QUARTER;
+    assert_eq!(quarter_due(q + 60, Some(q - 900)), Some((q - 900, q)));
+    // Several missed at once are caught up together.
+    assert_eq!(quarter_due(q + 60, Some(q - 2700)), Some((q - 2700, q)));
+}
+
+#[test]
+fn after_a_start_the_last_whole_quarter_is_rolled_up_again() {
+    // Rolling up is idempotent, and the quarter before a restart may never
+    // have been.
+    let q = QUARTER;
+    assert_eq!(quarter_due(q + 420, None), Some((q - 900, q)));
+}

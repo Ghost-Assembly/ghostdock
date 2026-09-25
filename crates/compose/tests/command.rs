@@ -3,7 +3,9 @@
 //! These pin the flags that carry real consequences: project identity,
 //! deploy-success semantics, and never destroying data.
 
-use compose::command::{Project, Pull, config, down, restart, stop, up};
+use compose::command::{
+    Project, Pull, config, down, down_by_name, restart, restart_by_name, stop, stop_by_name, up,
+};
 use std::path::Path;
 
 fn project() -> Project<'static> {
@@ -137,4 +139,29 @@ fn stop_and_restart_do_not_remove_anything() {
         assert!(!argv.contains(&"--remove-orphans".to_owned()));
         assert!(!argv.contains(&"--volumes".to_owned()));
     }
+}
+
+#[test]
+fn a_project_can_be_reached_by_name_alone() {
+    // When its file is not at hand, compose finds a project's containers by
+    // their labels. No file is named, so none can be the wrong one.
+    let dir = Path::new("/var/lib/ghostdock/stacks/blog");
+    for argv in [
+        down_by_name("blog", dir),
+        stop_by_name("blog", dir),
+        restart_by_name("blog", dir),
+    ] {
+        assert_eq!(argv[0], "compose");
+        assert_eq!(pairs(&argv, "--project-name").as_deref(), Some("blog"));
+        assert_eq!(
+            pairs(&argv, "--project-directory").as_deref(),
+            Some("/var/lib/ghostdock/stacks/blog")
+        );
+        assert!(!argv.contains(&"--file".to_owned()), "{argv:?}");
+        assert!(
+            !argv.contains(&"--volumes".to_owned()) && !argv.contains(&"-v".to_owned()),
+            "{argv:?}"
+        );
+    }
+    assert!(down_by_name("blog", dir).contains(&"--remove-orphans".to_owned()));
 }

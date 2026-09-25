@@ -100,18 +100,20 @@ async fn compose_file(
 }
 
 async fn update(
-    _principal: Authorized<perm::StacksEdit>,
+    principal: Authorized<perm::StacksEdit>,
     State(state): State<AppState>,
     Path(id): Path<i64>,
     Json(new): Json<NewStack>,
 ) -> Result<Json<RegisteredStack>, ApiError> {
-    load(&state, id).await?;
+    let stack = load(&state, id).await?;
     if new.compose_yaml.trim().is_empty() {
         return Err(ApiError::BadRequest(
             "The compose file is empty.".to_owned(),
         ));
     }
     state.store.stack_update_yaml(id, &new.compose_yaml).await?;
+    // That it changed, not what it says: a compose file can hold secrets.
+    crate::audit::record(&state, &principal, "edit compose file", &stack.slug, None).await;
     load(&state, id).await.map(Json)
 }
 
@@ -119,14 +121,24 @@ async fn update(
 ///
 /// Containers are deliberately left alone: forgetting a stack and destroying
 /// it are different intentions, and one must not silently perform the other.
-/// Stop it first if that is what you meant.
+/// Stop it first if that is what you meant. Its `.env` goes, since nothing
+/// manages the secrets in it any more; the rest of its directory stays.
 async fn remove(
     principal: Authorized<perm::StacksForget>,
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<axum::http::StatusCode, ApiError> {
     let stack = load(&state, id).await?;
+    // Forgotten mid-deploy, the deploy would finish into a stack that no
+    // longer exists and leave its files behind. Held until this is done, so
+    // nothing can start in between either.
+    let _slot = state.runner.claim(id).ok_or_else(|| {
+        ApiError::Conflict("Something is running for this stack. Wait for it to finish.".to_owned())
+    })?;
     state.store.stack_delete(id).await?;
+    if let Err(e) = state.runner.forget_env(&stack.slug).await {
+        tracing::warn!(error = %e, stack = %stack.slug, "could not remove a forgotten stack's .env");
+    }
     crate::audit::record(&state, &principal, "forget stack", &stack.slug, None).await;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
@@ -151,6 +163,7 @@ async fn act(
             // useful part; a generic failure here would hide the reason.
             RunError::Compose(e) => ApiError::BadRequest(e.to_string()),
             RunError::Git(e) => ApiError::BadRequest(e.to_string()),
+            e @ RunError::NoFiles(_) => ApiError::BadRequest(e.to_string()),
         })?;
 
     crate::audit::record(

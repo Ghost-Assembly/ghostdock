@@ -46,6 +46,51 @@ struct Prepared {
     commit: Option<String>,
 }
 
+impl Prepared {
+    fn project<'a>(&'a self, name: &'a str) -> Project<'a> {
+        Project {
+            name,
+            dir: &self.project_dir,
+            file: &self.compose_file,
+            env_file: self.env_file.as_deref(),
+        }
+    }
+}
+
+/// What stop, restart and take-down act on.
+enum Existing {
+    /// The files the stack was last deployed from.
+    Files(Prepared),
+    /// No files: the project by name, found through its containers' labels.
+    Name(PathBuf),
+}
+
+/// Every action except deploying, which is the only one that changes what
+/// a stack is.
+#[derive(Clone, Copy)]
+enum Operation {
+    Stop,
+    Restart,
+    TakeDown,
+}
+
+/// A stack's claim on running something. Released when dropped, so a task
+/// that panics cannot leave its stack marked busy for good.
+#[derive(Debug)]
+pub struct Slot {
+    in_flight: Arc<Mutex<HashSet<i64>>>,
+    stack_id: i64,
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.stack_id);
+    }
+}
+
 /// The result of one attempt.
 struct Outcome {
     success: bool,
@@ -75,6 +120,12 @@ pub enum RunError {
     Store(#[from] store::Error),
     #[error(transparent)]
     Git(#[from] gitsync::Error),
+    #[error(
+        "GhostDock has no files for this stack, and compose would read {} instead. \
+         Deploy it first.",
+        .0.display()
+    )]
+    NoFiles(PathBuf),
 }
 
 #[derive(Clone)]
@@ -130,7 +181,23 @@ impl Runner {
 
     #[must_use]
     pub fn is_busy(&self, stack_id: i64) -> bool {
-        self.in_flight.lock().expect("lock").contains(&stack_id)
+        self.in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&stack_id)
+    }
+
+    /// Claims a stack for one operation, or `None` if one is running.
+    #[must_use]
+    pub fn claim(&self, stack_id: i64) -> Option<Slot> {
+        self.in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(stack_id)
+            .then(|| Slot {
+                in_flight: Arc::clone(&self.in_flight),
+                stack_id,
+            })
     }
 
     /// Records the attempt, starts it in the background, and returns at once.
@@ -140,18 +207,12 @@ impl Runner {
         action: Action,
         trigger: Trigger,
     ) -> Result<Deployment, RunError> {
-        if !self.in_flight.lock().expect("lock").insert(stack.id) {
-            return Err(RunError::Busy);
-        }
-
-        // From here on the slot is held, so every path must release it.
-        let deployment = match self.store.deployment_start(stack.id, action, trigger).await {
-            Ok(d) => d,
-            Err(e) => {
-                self.release(stack.id);
-                return Err(e.into());
-            }
-        };
+        // Held until the operation is over, however it ends.
+        let slot = self.claim(stack.id).ok_or(RunError::Busy)?;
+        let deployment = self
+            .store
+            .deployment_start(stack.id, action, trigger)
+            .await?;
 
         let _ = self.events.send(ServerEvent::DeploymentStarted {
             stack_id: stack.id,
@@ -163,25 +224,40 @@ impl Runner {
         let stack = stack.clone();
         let id = deployment.id;
         tokio::spawn(async move {
-            let outcome = this.execute(&stack, action, id).await;
+            use futures::FutureExt as _;
+            let _slot = slot;
+            // A panic is still an outcome to record, not a deployment left
+            // marked running until the next restart.
+            let outcome = std::panic::AssertUnwindSafe(this.execute(&stack, action, id))
+                .catch_unwind()
+                .await
+                .unwrap_or_else(|_| {
+                    Outcome::failed("GhostDock failed while running this.".to_owned())
+                });
             this.finish(stack.id, id, outcome).await;
-            this.release(stack.id);
         });
 
         Ok(deployment)
     }
 
-    fn release(&self, stack_id: i64) {
-        self.in_flight.lock().expect("lock").remove(&stack_id);
-    }
-
-    /// Returns `(success, exit_code, log, commit)`.
     async fn execute(
         &self,
         stack: &RegisteredStack,
         action: Action,
         deployment_id: i64,
     ) -> Outcome {
+        let operation = match action {
+            Action::Deploy => return self.deploy(stack, deployment_id).await,
+            Action::Stop => Operation::Stop,
+            Action::Restart => Operation::Restart,
+            Action::Remove => Operation::TakeDown,
+        };
+        self.operate(stack, operation, deployment_id).await
+    }
+
+    /// Brings the stack to what its source says now: the one action that
+    /// fetches, and the one that moves the recorded commit.
+    async fn deploy(&self, stack: &RegisteredStack, deployment_id: i64) -> Outcome {
         let prepared = match self.prepare(stack).await {
             Ok(prepared) => prepared,
             // Failing to reach the repository, or to read the file it names,
@@ -190,43 +266,63 @@ impl Runner {
             Err(e) => return Outcome::failed(e.to_string()),
         };
         let commit = prepared.commit.clone();
-
-        let project = Project {
-            name: &stack.slug,
-            dir: &prepared.project_dir,
-            file: &prepared.compose_file,
-            env_file: prepared.env_file.as_deref(),
-        };
+        let project = prepared.project(&stack.slug);
 
         // Validate before touching anything. A compose file that cannot be
         // resolved should fail with compose's own message rather than half
         // apply and leave the stack in an in-between state.
-        if matches!(action, Action::Deploy) {
-            let check = self
-                .run(command::config(&project), deployment_id, false)
-                .await;
-            match check {
-                Ok(outcome) if !outcome.success => {
-                    return Outcome {
-                        success: false,
-                        exit_code: outcome.exit_code,
-                        log: outcome.output,
-                        commit,
-                    };
-                }
-                Err(e) => return Outcome::failed(e.to_string()),
-                Ok(_) => {}
+        let check = self
+            .run(command::config(&project), deployment_id, false)
+            .await;
+        match check {
+            Ok(outcome) if !outcome.success => {
+                return Outcome {
+                    success: false,
+                    exit_code: outcome.exit_code,
+                    log: outcome.output,
+                    commit,
+                };
             }
+            Err(e) => return Outcome::failed(e.to_string()),
+            Ok(_) => {}
         }
 
-        let argv = match action {
-            Action::Deploy => command::up(&project, Pull::Always, WAIT_TIMEOUT_SECS),
-            Action::Stop => command::stop(&project),
-            Action::Restart => command::restart(&project),
-            Action::Remove => command::down(&project),
-        };
+        let argv = command::up(&project, Pull::Always, WAIT_TIMEOUT_SECS);
+        Self::outcome(self.run(argv, deployment_id, true).await, commit)
+    }
 
-        match self.run(argv, deployment_id, true).await {
+    /// Stops, restarts or takes down what was last deployed.
+    ///
+    /// Never fetches: the repository may have moved on, and doing any of
+    /// these must not quietly change what the stack runs, nor make it look
+    /// up to date when it is not.
+    async fn operate(
+        &self,
+        stack: &RegisteredStack,
+        operation: Operation,
+        deployment_id: i64,
+    ) -> Outcome {
+        let argv = match self.existing(stack).await {
+            Ok(Existing::Files(prepared)) => {
+                let project = prepared.project(&stack.slug);
+                match operation {
+                    Operation::Stop => command::stop(&project),
+                    Operation::Restart => command::restart(&project),
+                    Operation::TakeDown => command::down(&project),
+                }
+            }
+            Ok(Existing::Name(dir)) => match operation {
+                Operation::Stop => command::stop_by_name(&stack.slug, &dir),
+                Operation::Restart => command::restart_by_name(&stack.slug, &dir),
+                Operation::TakeDown => command::down_by_name(&stack.slug, &dir),
+            },
+            Err(e) => return Outcome::failed(e.to_string()),
+        };
+        Self::outcome(self.run(argv, deployment_id, true).await, None)
+    }
+
+    fn outcome(run: Result<compose::Outcome, compose::Error>, commit: Option<String>) -> Outcome {
+        match run {
             Ok(outcome) => {
                 let note = if outcome.timed_out {
                     format!(
@@ -245,6 +341,54 @@ impl Runner {
             }
             Err(e) => Outcome::failed(e.to_string()),
         }
+    }
+
+    /// The files a stack was last deployed from, as they are on disk.
+    ///
+    /// Falls back to the project's name when there are none (a stack
+    /// registered but never deployed from here, or whose checkout is gone),
+    /// unless compose would then read some other file in their place.
+    async fn existing(&self, stack: &RegisteredStack) -> Result<Existing, RunError> {
+        compose::slug::validate(&stack.slug).map_err(compose::Error::from)?;
+        let dir = self.compose.project_dir(&stack.slug);
+        let env_file = Some(dir.join(compose::ENV_FILE)).filter(|p| p.is_file());
+
+        let found = match stack.git.as_ref() {
+            // The stored file is the stack, and writing it out fetches
+            // nothing, so a stack never deployed from here gets one.
+            None if !dir.join(COMPOSE_FILE).is_file() => {
+                return self.prepare(stack).await.map(Existing::Files);
+            }
+            None => Some(Prepared {
+                project_dir: dir.clone(),
+                compose_file: COMPOSE_FILE.to_owned(),
+                env_file,
+                commit: None,
+            }),
+            Some(git) => {
+                let repo_dir = dir.join("repo");
+                gitsync::resolve_in_repo(&repo_dir, &git.compose_path)
+                    .ok()
+                    .filter(|path| repo_dir.join(".git").exists() && path.is_file())
+                    .map(|path| Prepared {
+                        project_dir: path.parent().unwrap_or(&repo_dir).to_path_buf(),
+                        compose_file: path.file_name().map_or_else(
+                            || COMPOSE_FILE.to_owned(),
+                            |name| name.to_string_lossy().into_owned(),
+                        ),
+                        env_file,
+                        commit: None,
+                    })
+            }
+        };
+        if let Some(prepared) = found {
+            return Ok(Existing::Files(prepared));
+        }
+
+        if let Some(stray) = compose::default_file_above(&dir).await {
+            return Err(RunError::NoFiles(stray));
+        }
+        Ok(Existing::Name(dir))
     }
 
     /// Puts the stack's compose file and environment where compose can read
@@ -361,10 +505,10 @@ impl Runner {
         deployment_id: i64,
         stream: bool,
     ) -> Result<compose::Outcome, compose::Error> {
-        let sink = stream.then(|| {
+        let (sink, forwarder) = if stream {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
             let events = self.events.clone();
-            tokio::spawn(async move {
+            let forwarder = tokio::spawn(async move {
                 while let Some(line) = rx.recv().await {
                     let _ = events.send(ServerEvent::DeploymentOutput {
                         deployment_id,
@@ -372,10 +516,39 @@ impl Runner {
                     });
                 }
             });
-            tx
-        });
+            (Some(tx), Some(forwarder))
+        } else {
+            (None, None)
+        };
 
-        self.compose.run(&argv, COMMAND_TIMEOUT, sink).await
+        let result = self.compose.run(&argv, COMMAND_TIMEOUT, sink).await;
+        // The sender went with `run`, so this ends once every line is sent:
+        // a client never hears "finished" before the last of the output.
+        if let Some(forwarder) = forwarder {
+            let _ = forwarder.await;
+        }
+        result
+    }
+
+    /// Removes the checkout discovery keeps for a repository.
+    pub async fn forget_discovery(&self, repo_id: i64) -> std::io::Result<()> {
+        // Not while a discovery is using it.
+        let _one_at_a_time = self.discovering.lock().await;
+        let dir = self
+            .compose
+            .project_dir(DISCOVERY_DIR)
+            .join(repo_id.to_string());
+        match tokio::fs::remove_dir_all(&dir).await {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+
+    /// Removes a forgotten stack's `.env`, which holds its secrets in plain
+    /// text. Everything else in its directory stays: its containers may
+    /// still be running and using it.
+    pub async fn forget_env(&self, slug: &str) -> Result<(), compose::Error> {
+        self.compose.remove_env_file(slug).await
     }
 
     async fn finish(&self, stack_id: i64, deployment_id: i64, outcome: Outcome) {
@@ -411,5 +584,31 @@ impl Runner {
             Ok(None) => tracing::error!(deployment_id, "deployment vanished while running"),
             Err(e) => tracing::error!(error = %e, "could not read back deployment"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_panic_while_running_still_frees_the_stack() {
+        let store = Store::open_in_memory().await.expect("store");
+        let runner = Runner::new(Compose::new("/nonexistent"), store);
+
+        let slot = runner.claim(7).expect("free");
+        assert!(runner.is_busy(7));
+        assert!(runner.claim(7).is_none(), "one operation at a time");
+
+        let crashed = tokio::spawn(async move {
+            let _slot = slot;
+            panic!("an operation failed badly");
+        })
+        .await;
+        assert!(crashed.is_err());
+        assert!(
+            !runner.is_busy(7),
+            "a crashed operation must not leave its stack busy for good"
+        );
     }
 }

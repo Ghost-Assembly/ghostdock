@@ -38,6 +38,9 @@ pub fn routes() -> Router<AppState> {
         )
 }
 
+/// How often an open shell is pinged, as the event socket is.
+const PING: std::time::Duration = std::time::Duration::from_secs(20);
+
 const RUN_DEFAULT_SECS: u32 = 30;
 const RUN_MAX_SECS: u32 = 300;
 /// How much of a command the audit trail keeps.
@@ -140,10 +143,17 @@ async fn session(
     // Told why, when the session is ended from this side.
     let (stop, mut stopped) = tokio::sync::oneshot::channel::<&'static str>();
 
-    // Container output to the browser.
-    let to_browser = tokio::spawn(async move {
+    // Container output to the browser, and a ping when there is none: a
+    // proxy drops a connection that stays quiet, and a shell often does.
+    let mut to_browser = tokio::spawn(async move {
+        let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + PING, PING);
         loop {
             tokio::select! {
+                _ = ping.tick() => {
+                    if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
+                        return;
+                    }
+                }
                 reason = &mut stopped => {
                     if let Ok(reason) = reason {
                         let _ = send_line(&mut sink, reason).await;
@@ -181,8 +191,15 @@ async fn session(
                 tracing::info!(container, "closed a shell whose access was revoked");
                 let _ = stop.send("access was revoked; this shell is closed");
                 drop(writer);
-                // Long enough for the explanation to be sent, no longer.
-                let _ = tokio::time::timeout(std::time::Duration::from_secs(2), to_browser).await;
+                // Long enough for the explanation to be sent, no longer. A
+                // browser that will not take it is cut off, not left
+                // holding the shell's output stream open.
+                if tokio::time::timeout(std::time::Duration::from_secs(2), &mut to_browser)
+                    .await
+                    .is_err()
+                {
+                    to_browser.abort();
+                }
                 return;
             }
             next = incoming.next() => match next {

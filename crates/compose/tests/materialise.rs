@@ -86,3 +86,54 @@ async fn a_traversing_name_is_refused_before_anything_is_written() {
         "nothing may be created outside the stacks root"
     );
 }
+
+#[tokio::test]
+async fn forgetting_a_stack_removes_its_env_file_and_nothing_else() {
+    // The .env holds the stack's secrets in plain text; the rest of the
+    // directory may hold data the stack's containers still use.
+    let root = tempfile::tempdir().unwrap();
+    let compose = Compose::new(root.path());
+    let dir = compose
+        .materialise("app", "services: {}\n", &vars(&[("TOKEN", "hunter2")]))
+        .await
+        .unwrap();
+    std::fs::create_dir_all(dir.join("data")).unwrap();
+    std::fs::write(dir.join("data/keep.db"), "keep").unwrap();
+
+    compose.remove_env_file("app").await.unwrap();
+
+    assert!(!dir.join(ENV_FILE).exists());
+    assert!(dir.join(COMPOSE_FILE).exists());
+    assert!(dir.join("data/keep.db").exists());
+
+    // Nothing to remove is not a failure, and a bad name is refused.
+    compose.remove_env_file("app").await.unwrap();
+    compose.remove_env_file("never-deployed").await.unwrap();
+    assert!(compose.remove_env_file("../escape").await.is_err());
+}
+
+#[tokio::test]
+async fn a_compose_file_that_compose_would_find_on_its_own_is_reported() {
+    // Given no file, compose looks in the project directory and then in
+    // every directory above it, and would act on whatever it found there.
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("stacks/app");
+    std::fs::create_dir_all(&dir).unwrap();
+    assert_eq!(compose::default_file_above(&dir).await, None);
+
+    for name in [
+        "compose.yaml",
+        "compose.yml",
+        "docker-compose.yaml",
+        "docker-compose.yml",
+    ] {
+        let stray = root.path().join(name);
+        std::fs::write(&stray, "services: {}\n").unwrap();
+        assert_eq!(
+            compose::default_file_above(&dir).await,
+            Some(stray.clone()),
+            "{name}"
+        );
+        std::fs::remove_file(&stray).unwrap();
+    }
+}

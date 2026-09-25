@@ -228,3 +228,75 @@ async fn lists_the_tracked_files_of_a_checkout() {
         ]
     );
 }
+
+// ---- nothing given as a URL or ref is ever an option ----------------------
+
+/// A command that leaves `marker` behind if git ever runs it.
+fn planted(marker: &Path) -> String {
+    format!("--upload-pack=touch {}", marker.display())
+}
+
+#[tokio::test]
+async fn a_ref_starting_with_a_dash_is_not_read_as_an_option() {
+    let remote = tempfile::tempdir().unwrap();
+    origin(remote.path());
+    let url = format!("file://{}", remote.path().display());
+    let scratch = tempfile::tempdir().unwrap();
+    let marker = scratch.path().join("ran");
+    let work = tempfile::tempdir().unwrap();
+
+    let git = Git::new();
+    assert!(
+        git.remote_head(&url, &planted(&marker), None)
+            .await
+            .is_err()
+    );
+    assert!(
+        git.sync(&work.path().join("repo"), &url, &planted(&marker), None)
+            .await
+            .is_err()
+    );
+    assert!(!marker.exists(), "git ran a command given as a ref");
+}
+
+#[tokio::test]
+async fn a_url_starting_with_a_dash_is_not_read_as_an_option() {
+    let scratch = tempfile::tempdir().unwrap();
+    let marker = scratch.path().join("ran");
+    let work = tempfile::tempdir().unwrap();
+
+    let git = Git::new();
+    assert!(
+        git.remote_head(&planted(&marker), "refs/heads/main", None)
+            .await
+            .is_err()
+    );
+    assert!(
+        git.sync(
+            &work.path().join("repo"),
+            &planted(&marker),
+            "refs/heads/main",
+            None
+        )
+        .await
+        .is_err()
+    );
+    assert!(!marker.exists(), "git ran a command given as a URL");
+}
+
+#[tokio::test]
+async fn the_ext_transport_is_never_used() {
+    // `ext::` runs its address as a command. Refused by the server before it
+    // is stored, and by git itself here, for anything already stored.
+    let scratch = tempfile::tempdir().unwrap();
+    let marker = scratch.path().join("ran");
+    let url = format!("ext::touch {}", marker.display());
+
+    assert!(
+        Git::new()
+            .remote_head(&url, "refs/heads/main", None)
+            .await
+            .is_err()
+    );
+    assert!(!marker.exists(), "git ran a command given as a transport");
+}
