@@ -279,6 +279,8 @@ pub mod perm {
         CredentialsManage,
         CleanupRun,
         ShellOpen,
+        ChecksManage,
+        AlertsManage,
     );
 }
 

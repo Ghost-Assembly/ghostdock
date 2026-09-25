@@ -94,6 +94,19 @@ async fn list_stacks(
         })
         .collect();
 
+    // Each stack's uptime checks that are down now, by name.
+    let mut down: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
+    for check in state.store.checks_list(host_id).await? {
+        if let Some(stack) = check.stack_id
+            && state
+                .checks
+                .status(check.id)
+                .is_some_and(|s| s.state == shared::checks::CheckState::Down)
+        {
+            down.entry(stack).or_default().push(check.name);
+        }
+    }
+
     let managed = state
         .store
         .stacks_list(host_id)
@@ -108,6 +121,7 @@ async fn list_stacks(
                     name: stack.name,
                     source_kind: stack.source_kind,
                     busy,
+                    checks_down: down.remove(&stack.id).unwrap_or_default(),
                 },
             )
         })
