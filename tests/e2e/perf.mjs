@@ -20,14 +20,8 @@ const BASE = process.env.GHOSTDOCK_URL ?? 'http://127.0.0.1:18081';
 
 /** Cold, interactive, on poor LTE with a mid-range CPU. */
 const COLD_INTERACTIVE_MS = 3000;
-/**
- * Bytes actually crossing the wire, so it also catches compression breaking
- * (uncompressed, the bundle is over three times this). The time above is
- * what decides usability; this is its early warning. Raised from 400 KB
- * when the theme, icons and API reference took the bundle to 411 KB with
- * the cold load still under 2.7 s.
- */
-const TRANSFER_BUDGET_KB = 480;
+/** Bytes actually crossing the wire, so it also catches compression breaking. */
+const TRANSFER_BUDGET_KB = 400;
 /** A repeat visit should be effectively instant; this is the daily case. */
 const WARM_INTERACTIVE_MS = 800;
 
