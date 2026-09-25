@@ -20,6 +20,7 @@ use crate::git_stack::NewGitStackForm;
 use crate::host::Host;
 use crate::logs::ContainerLogs;
 use crate::new_stack::NewStackForm;
+use crate::reference::ApiReference;
 use crate::resources::ContainerResources;
 use crate::screen::Screen;
 use crate::settings::Settings;
@@ -144,6 +145,7 @@ fn Shell(user: User, session: RwSignal<Session>) -> impl IntoView {
                     <Route path=path!("/activity") view=Activity />
                     <Route path=path!("/accounts") view=Accounts />
                     <Route path=path!("/tokens") view=Tokens />
+                    <Route path=path!("/settings/reference") view=ApiReference />
                     <Route path=path!("/containers/:id/logs") view=ContainerLogs />
                     <Route path=path!("/containers/:id/shell") view=Console />
                     <Route path=path!("/containers/:name/resources") view=ContainerResources />

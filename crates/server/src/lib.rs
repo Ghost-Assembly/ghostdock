@@ -20,6 +20,7 @@ pub mod mcp;
 pub mod metrics;
 pub mod ops;
 pub mod origin;
+pub mod reference;
 pub mod revocation;
 pub mod runner;
 pub mod session_store;

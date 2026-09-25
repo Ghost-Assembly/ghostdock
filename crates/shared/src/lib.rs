@@ -32,6 +32,7 @@ pub mod event;
 pub mod host;
 pub mod logs;
 pub mod metrics;
+pub mod reference;
 pub mod source;
 pub mod stack;
 pub mod token;

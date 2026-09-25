@@ -175,6 +175,10 @@ GhostDock keeps only a hash of each token. What a token does is recorded in the
 activity log under its name, and revoking it takes effect at once, closing
 anything it has open.
 
+Every endpoint and MCP tool, with the permission each needs, is listed under
+Settings → API reference, and as JSON at `/api/v1/reference` for any token.
+The server generates it from the routes it mounts, so it is always current.
+
 ### Claude Code, over MCP
 
 GhostDock is also an MCP server, at `/mcp`, so Claude Code can list and inspect

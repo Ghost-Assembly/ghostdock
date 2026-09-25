@@ -1,31 +1,92 @@
 //! Managing stacks: registering them, changing them, and running operations.
 
+use axum::Json;
 use axum::extract::{Path, State};
-use axum::routing::{get, post};
-use axum::{Json, Router};
 use shared::deployment::{
     Action, Deployment, DeploymentDetail, NewStack, RegisteredStack, StackCompose, Trigger,
 };
+use shared::reference::Access;
+use shared::token::Permission;
 
 use crate::auth::{Authorized, Principal, perm};
 use crate::error::ApiError;
+use crate::reference::Routes;
 use crate::runner::RunError;
 use crate::state::AppState;
 
 /// How many past attempts a stack's history returns.
 const HISTORY_LIMIT: i64 = 25;
 
-pub fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/hosts/{host_id}/stacks", post(create))
-        .route("/stacks/{id}", get(detail).put(update).delete(remove))
-        .route("/stacks/{id}/compose", get(compose_file))
-        .route("/stacks/{id}/deploy", post(deploy))
-        .route("/stacks/{id}/stop", post(stop))
-        .route("/stacks/{id}/restart", post(restart))
-        .route("/stacks/{id}/down", post(down))
-        .route("/stacks/{id}/deployments", get(history))
-        .route("/deployments/{id}", get(deployment))
+pub fn routes() -> Routes {
+    let view = Access::Token(Permission::HostView);
+    Routes::new("Stacks")
+        .post(
+            "/hosts/{host_id}/stacks",
+            Access::Token(Permission::StacksCreate),
+            "Registers a stack from a name and an inline compose file",
+            create,
+        )
+        .get(
+            "/stacks/{id}",
+            view,
+            "One registered stack and where its compose file comes from",
+            detail,
+        )
+        .put(
+            "/stacks/{id}",
+            Access::Token(Permission::StacksEdit),
+            "Replaces a registered stack's compose file",
+            update,
+        )
+        .delete(
+            "/stacks/{id}",
+            Access::Token(Permission::StacksForget),
+            "Forgets a registration; whatever is running keeps running",
+            remove,
+        )
+        .get(
+            "/stacks/{id}/compose",
+            Access::Token(Permission::ComposeRead),
+            "The compose file as GhostDock deploys it",
+            compose_file,
+        )
+        .area("Running stacks")
+        .post(
+            "/stacks/{id}/deploy",
+            Access::Token(Permission::StacksDeploy),
+            "Starts docker compose up --wait: pulls images and applies changes",
+            deploy,
+        )
+        .post(
+            "/stacks/{id}/stop",
+            Access::Token(Permission::StacksStop),
+            "Stops the stack's containers, leaving them in place",
+            stop,
+        )
+        .post(
+            "/stacks/{id}/restart",
+            Access::Token(Permission::StacksRestart),
+            "Restarts the stack's containers in place",
+            restart,
+        )
+        .post(
+            "/stacks/{id}/down",
+            Access::Token(Permission::StacksTakeDown),
+            "Starts docker compose down: containers and networks go, volumes stay",
+            down,
+        )
+        .get(
+            "/stacks/{id}/deployments",
+            view,
+            "The stack's latest 25 operations, newest first",
+            history,
+        )
+        .get(
+            "/deployments/{id}",
+            view,
+            "One operation with its output",
+            deployment,
+        )
 }
 
 async fn create(

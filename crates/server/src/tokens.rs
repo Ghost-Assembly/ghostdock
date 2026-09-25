@@ -4,24 +4,41 @@
 //! through the browser reaches them. A token that could issue tokens could
 //! grant itself anything.
 
+use axum::Json;
 use axum::extract::{Path, State};
-use axum::routing::{delete, get};
-use axum::{Json, Router};
+use shared::reference::Access;
 use shared::token::{ApiToken, CreatedApiToken, NewApiToken};
 use store::tokens::TokenRow;
 
 use crate::auth::Principal;
 use crate::error::ApiError;
+use crate::reference::Routes;
 use crate::revocation::Revocation;
 use crate::state::AppState;
 
 const MAX_NAME_LEN: usize = 64;
 const MAX_EXPIRY_DAYS: u32 = 3650;
 
-pub fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/tokens", get(list).post(create))
-        .route("/tokens/{id}", delete(revoke))
+pub fn routes() -> Routes {
+    Routes::new("API tokens")
+        .get(
+            "/tokens",
+            Access::Session,
+            "Your tokens and what each was granted; never their secrets",
+            list,
+        )
+        .post(
+            "/tokens",
+            Access::Session,
+            "Issues a token with the permissions given; its secret is returned this once",
+            create,
+        )
+        .delete(
+            "/tokens/{id}",
+            Access::Session,
+            "Revokes one of your tokens and ends what it holds open",
+            revoke,
+        )
 }
 
 fn to_wire(row: TokenRow) -> ApiToken {

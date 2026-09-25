@@ -391,6 +391,10 @@ pub async fn audit() -> Result<Vec<AuditEntry>> {
     get("/audit").await
 }
 
+pub async fn reference() -> Result<shared::reference::Reference> {
+    get("/reference").await
+}
+
 pub async fn metrics_now() -> Result<Now> {
     get(&format!("/hosts/{HOST}/metrics/now")).await
 }

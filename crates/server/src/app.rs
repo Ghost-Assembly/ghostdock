@@ -3,7 +3,6 @@
 use std::path::Path;
 
 use axum::Router;
-use axum::routing::get;
 use tower_http::compression::CompressionLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_sessions::cookie::SameSite;
@@ -38,24 +37,11 @@ pub fn build(state: AppState, secure_cookies: bool, ui: Option<&Path>) -> Router
         .with_secure(secure_cookies)
         .with_expiry(Expiry::OnInactivity(Duration::days(SESSION_IDLE_DAYS)));
 
-    let api = Router::new()
-        .route("/health", get(|| async { "ok" }))
-        .merge(crate::auth::routes())
-        .merge(crate::accounts::routes())
-        .merge(crate::tokens::routes())
-        .merge(crate::hosts::routes())
-        .merge(crate::stacks::routes())
-        .merge(crate::sources::routes())
-        .merge(crate::discovery::routes())
-        .merge(crate::updates::routes())
-        .merge(crate::ops::routes())
-        .merge(crate::exec::routes())
-        .merge(crate::metrics::routes::routes())
-        .merge(crate::audit::routes())
-        .merge(crate::events::routes());
+    // Every API route, each mounted with its entry in the reference.
+    let api = crate::reference::api().into_router();
 
     let router = Router::new()
-        .nest("/api/v1", api)
+        .nest(crate::reference::API_PREFIX, api)
         .layer(session_layer)
         .with_state(state.clone());
     // MCP tools call into the API above, so they get a clone of it; /mcp is

@@ -1,18 +1,19 @@
 //! Authentication: first-run bootstrap, login, logout, and the extractor
 //! every protected handler depends on.
 
+use axum::Json;
 use axum::extract::{FromRequestParts, State};
 use axum::http::request::Parts;
-use axum::routing::{get, post, put};
-use axum::{Json, Router};
 use domain::auth::{hash_password, verify_password};
 use shared::auth::{AuthStatus, Credentials, PasswordChange, User};
+use shared::reference::Access;
 use shared::token::Permission;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use tower_sessions::Session;
 
 use crate::error::ApiError;
+use crate::reference::Routes;
 use crate::state::AppState;
 
 /// Session key holding the authenticated user's id.
@@ -213,6 +214,33 @@ impl<P: perm::Required + Send + Sync> FromRequestParts<AppState> for Authorized<
     }
 }
 
+/// Any caller who has proved who they are: a signed-in person, or a token
+/// whatever it was granted.
+///
+/// For what every token may read because it is neither secret nor about the
+/// host: the API reference. Anything else takes [`Authorized`] and names
+/// the permission it needs.
+#[derive(Debug)]
+pub struct Authenticated(Principal);
+
+impl Deref for Authenticated {
+    type Target = Principal;
+    fn deref(&self) -> &Principal {
+        &self.0
+    }
+}
+
+impl FromRequestParts<AppState> for Authenticated {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        Principal::resolve(parts, state).await.map(Self)
+    }
+}
+
 /// One marker type per [`Permission`], for naming in handler signatures:
 /// `principal: Authorized<perm::StacksDeploy>`.
 pub mod perm {
@@ -254,13 +282,38 @@ pub mod perm {
     );
 }
 
-pub fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/auth/status", get(status))
-        .route("/auth/bootstrap", post(bootstrap))
-        .route("/auth/login", post(login))
-        .route("/auth/logout", post(logout))
-        .route("/auth/password", put(change_password))
+pub fn routes() -> Routes {
+    Routes::new("Signing in")
+        .get(
+            "/auth/status",
+            Access::Public,
+            "Whether the instance is set up, and who is signed in",
+            status,
+        )
+        .post(
+            "/auth/bootstrap",
+            Access::Public,
+            "Creates the first account and signs it in; refused once one exists",
+            bootstrap,
+        )
+        .post(
+            "/auth/login",
+            Access::Public,
+            "Signs in with a username and password",
+            login,
+        )
+        .post(
+            "/auth/logout",
+            Access::Public,
+            "Signs out and ends this session's open connections",
+            logout,
+        )
+        .put(
+            "/auth/password",
+            Access::Session,
+            "Changes your password, given the current one; ends your other sessions",
+            change_password,
+        )
 }
 
 /// Unauthenticated: tells the client whether to show setup or login.
