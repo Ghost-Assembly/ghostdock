@@ -21,9 +21,11 @@
 
 mod accounts;
 mod activity;
+mod alerts;
 mod api;
 mod app;
 mod charts;
+mod checks;
 mod cleanup;
 mod confirm;
 mod console;

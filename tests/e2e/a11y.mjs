@@ -46,6 +46,9 @@ const SCREENS = [
   ['activity', '/activity', '.rows .row-name'],
   ['logs', logs, 'pre.log .log-line'],
   ['multilogs', '/logs', '.mlog-summary'],
+  ['check', '/checks/1', '.chart'],
+  ['newcheck', '/checks/new', 'form'],
+  ['alerts', '/settings/alerts', '.rows .row-name'],
 ];
 
 const VIEWPORTS = [

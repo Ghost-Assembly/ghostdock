@@ -69,6 +69,40 @@ fn metrics_input() -> Value {
     })
 }
 
+fn check_only() -> Value {
+    json!({
+        "type": "object",
+        "properties": { "check": { "type": "string", "description": "The check's name or numeric id." } },
+        "required": ["check"],
+    })
+}
+
+/// The settings a check takes, for creating one or changing one.
+fn check_settings(creating: bool) -> Value {
+    let mut properties = json!({
+        "name": { "type": "string" },
+        "kind": { "type": "string", "enum": ["http", "tcp", "container"], "description": "http requests a URL; tcp connects to host:port; container follows a container's running and health state." },
+        "target": { "type": "string", "description": "An http(s) URL, host:port, or a container name. Checks run from GhostDock's own network, so a service reachable only inside a stack's network needs a container check or a published port." },
+        "interval_seconds": { "type": "integer", "minimum": 20, "maximum": 86400, "description": "Default 60." },
+        "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 60, "description": "Default 10." },
+        "retries": { "type": "integer", "minimum": 1, "maximum": 10, "description": "Failures in a row before it is down. Default 2." },
+        "expect_status_min": { "type": "integer", "minimum": 100, "maximum": 599, "description": "Lowest accepted HTTP status. Default 200." },
+        "expect_status_max": { "type": "integer", "minimum": 100, "maximum": 599, "description": "Highest accepted HTTP status. Default 399." },
+        "keyword": { "type": "string", "description": "Text the page must contain. Empty removes it." },
+        "latency_warn_ms": { "type": "integer", "minimum": 0, "description": "Slower than this is degraded. 0 removes it." },
+        "stack": { "type": "string", "description": "The stack it belongs to, by name or numeric id; shown on that stack. \"none\" unlinks it." },
+        "notify": { "type": "boolean", "description": "Send its changes to the alert channels. Default true." },
+        "enabled": { "type": "boolean", "description": "Default true." },
+    });
+    if creating {
+        json!({ "type": "object", "properties": properties, "required": ["name", "kind", "target"] })
+    } else {
+        properties["check"] =
+            json!({ "type": "string", "description": "The check's name or numeric id." });
+        json!({ "type": "object", "properties": properties, "required": ["check"] })
+    }
+}
+
 const TOOLS: &[Tool] = &[
     Tool {
         name: "list_stacks",
@@ -483,6 +517,113 @@ const TOOLS: &[Tool] = &[
             })
         },
     },
+    Tool {
+        name: "list_checks",
+        title: "List uptime checks",
+        description: "Every uptime check: what it reaches, whether it is up, down, degraded, pending or paused and since when, why, its latest latency, and its uptime over 24 hours and 30 days.",
+        permission: Permission::HostView,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        input: no_arguments,
+    },
+    Tool {
+        name: "check_history",
+        title: "Uptime check history",
+        description: "One check over a range: its uptime, runs, average and worst latency, and the incidents (times it was down) in that range.",
+        permission: Permission::HostView,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        input: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "check": { "type": "string", "description": "The check's name or numeric id." },
+                    "range": { "type": "string", "enum": ["1h", "24h", "7d", "30d", "1y"], "description": "How far back. Default 24h." },
+                },
+                "required": ["check"],
+            })
+        },
+    },
+    Tool {
+        name: "create_check",
+        title: "Add an uptime check",
+        description: "Adds an uptime check: an http(s) URL answering with an accepted status (and keyword), a tcp host:port accepting connections, or a container running and not unhealthy. It runs within seconds and then every interval.",
+        permission: Permission::ChecksManage,
+        read_only: false,
+        destructive: false,
+        idempotent: false,
+        input: || check_settings(true),
+    },
+    Tool {
+        name: "update_check",
+        title: "Change an uptime check",
+        description: "Changes an uptime check. Only the settings given change; it starts again from pending and runs within seconds.",
+        permission: Permission::ChecksManage,
+        read_only: false,
+        destructive: false,
+        idempotent: true,
+        input: || check_settings(false),
+    },
+    Tool {
+        name: "delete_check",
+        title: "Remove an uptime check",
+        description: "Removes an uptime check with its history and incidents.",
+        permission: Permission::ChecksManage,
+        read_only: false,
+        destructive: true,
+        idempotent: false,
+        input: check_only,
+    },
+    Tool {
+        name: "list_incidents",
+        title: "List incidents",
+        description: "The latest times uptime checks went down, newest first: which check, when it started and ended (null while still down), and why.",
+        permission: Permission::HostView,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        input: || {
+            json!({
+                "type": "object",
+                "properties": { "limit": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Default 20." } },
+            })
+        },
+    },
+    Tool {
+        name: "list_alert_rules",
+        title: "List resource alert rules",
+        description: "Rules that alert when CPU, memory or disk stays over a share for some minutes, and whether each is firing now. Alerts go to every channel set up in GhostDock.",
+        permission: Permission::HostView,
+        read_only: true,
+        destructive: false,
+        idempotent: true,
+        input: no_arguments,
+    },
+    Tool {
+        name: "set_alert_rule",
+        title: "Set a resource alert rule",
+        description: "Adds a resource alert rule, or changes one given its id: alert once when a metric stays above a percentage for some minutes, and once when it falls back. CPU is a share of the host's cores; memory of the container's limit, else the host's memory; disk is the host's fullest watched disk. Setting enabled false turns a rule off.",
+        permission: Permission::AlertsManage,
+        read_only: false,
+        destructive: false,
+        idempotent: false,
+        input: || {
+            json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "The rule to change; leave out to add one." },
+                    "subject": { "type": "string", "description": "\"host\", \"container:<name>\", or \"stack:<name or id>\"." },
+                    "metric": { "type": "string", "enum": ["cpu", "memory", "disk"], "description": "disk only for host." },
+                    "above_pct": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
+                    "for_minutes": { "type": "integer", "minimum": 1, "maximum": 1440, "description": "How long it must stay above. Default 5." },
+                    "enabled": { "type": "boolean", "description": "Default true." },
+                },
+                "required": ["subject", "metric", "above_pct"],
+            })
+        },
+    },
 ];
 
 pub(super) fn listed(permissions: &[Permission]) -> Vec<Value> {
@@ -878,7 +1019,193 @@ pub(super) async fn run(tool: &Tool, api: &Api, args: &Value) -> Result<Value, S
             api.request("POST", &format!("/repos/{id}/import"), Some(body))
                 .await
         }
+        "list_checks" => list_checks(api).await,
+        "check_history" => check_history(api, args).await,
+        "create_check" => {
+            let body = check_body(api, args).await?;
+            api.request("POST", &format!("/hosts/{HOST}/checks"), Some(body))
+                .await
+                .map(|made| compact_check(&made))
+        }
+        "update_check" => {
+            let id = check(api, args).await?;
+            let body = check_body(api, args).await?;
+            api.request("PUT", &format!("/checks/{id}"), Some(body))
+                .await
+                .map(|saved| compact_check(&saved))
+        }
+        "delete_check" => {
+            let id = check(api, args).await?;
+            api.request("DELETE", &format!("/checks/{id}"), None)
+                .await?;
+            Ok(Value::String(format!("check {id} is removed")))
+        }
+        "list_incidents" => {
+            let limit = usize::try_from(number(args, "limit", 20, 100)).unwrap_or(20);
+            let list = api.get(&format!("/hosts/{HOST}/incidents")).await?;
+            Ok(named(
+                "incidents",
+                Value::Array(
+                    list.as_array()
+                        .into_iter()
+                        .flatten()
+                        .take(limit)
+                        .cloned()
+                        .collect(),
+                ),
+            ))
+        }
+        "list_alert_rules" => Ok(named("rules", api.get("/alerts/rules").await?)),
+        "set_alert_rule" => set_alert_rule(api, args).await,
         other => Err(format!("unknown tool: {other}")),
+    }
+}
+
+/// A check by name or id. Only a whole number goes into a path; a name is
+/// looked up in the list, which needs host.view.
+async fn check(api: &Api, args: &Value) -> Result<i64, String> {
+    let wanted = text(args, "check")?;
+    if let Ok(id) = wanted.parse::<i64>() {
+        return Ok(id);
+    }
+    let list = api
+        .get(&format!("/hosts/{HOST}/checks"))
+        .await
+        .map_err(|e| format!("could not look up checks by name ({e}); use the numeric id"))?;
+    list.as_array()
+        .into_iter()
+        .flatten()
+        .find(|c| {
+            c["check"]["name"]
+                .as_str()
+                .is_some_and(|n| n.eq_ignore_ascii_case(wanted))
+        })
+        .and_then(|c| c["check"]["id"].as_i64())
+        .ok_or_else(|| format!("no check called {wanted}; list_checks shows them"))
+}
+
+/// A check's settings as the API takes them, from a tool's arguments: only
+/// those given, so a change leaves the rest alone.
+async fn check_body(api: &Api, args: &Value) -> Result<Value, String> {
+    let mut body = json!({});
+    for (from, to) in [
+        ("name", "name"),
+        ("kind", "kind"),
+        ("target", "target"),
+        ("interval_seconds", "interval_s"),
+        ("timeout_seconds", "timeout_s"),
+        ("retries", "retries"),
+        ("expect_status_min", "expect_status_min"),
+        ("expect_status_max", "expect_status_max"),
+        ("keyword", "keyword"),
+        ("latency_warn_ms", "latency_warn_ms"),
+        ("notify", "notify"),
+        ("enabled", "enabled"),
+    ] {
+        if let Some(value) = args.get(from).filter(|v| !v.is_null()) {
+            body[to] = value.clone();
+        }
+    }
+    match args.get("stack").and_then(Value::as_str).map(str::trim) {
+        Some("none" | "") => body["stack_id"] = json!(0),
+        Some(_) => body["stack_id"] = json!(stack(api, args).await?.id),
+        None => {}
+    }
+    Ok(body)
+}
+
+/// A check as a model reads it: its settings flattened beside its state.
+fn compact_check(summary: &Value) -> Value {
+    let c = &summary["check"];
+    let s = &summary["status"];
+    json!({
+        "id": c["id"],
+        "name": c["name"],
+        "kind": c["kind"],
+        "target": c["target"],
+        "state": s["state"],
+        "since": s["since"],
+        "why": s["message"],
+        "latency_ms": s["latency_ms"],
+        "certificate_days_left": s["tls_days_left"],
+        "uptime_24h": summary["uptime_24h"],
+        "uptime_30d": summary["uptime_30d"],
+        "interval_seconds": c["interval_s"],
+        "retries": c["retries"],
+        "stack_id": c["stack_id"],
+        "notify": c["notify"],
+        "enabled": c["enabled"],
+    })
+}
+
+async fn list_checks(api: &Api) -> Result<Value, String> {
+    let list = api.get(&format!("/hosts/{HOST}/checks")).await?;
+    Ok(named(
+        "checks",
+        Value::Array(
+            list.as_array()
+                .into_iter()
+                .flatten()
+                .map(compact_check)
+                .collect(),
+        ),
+    ))
+}
+
+async fn check_history(api: &Api, args: &Value) -> Result<Value, String> {
+    let id = check(api, args).await?;
+    // Checked against the list rather than placed as given.
+    let range = metrics_range(args)?;
+    let history = api
+        .get(&format!("/checks/{id}/history?range={}", range.as_str()))
+        .await?;
+    let points = history["points"].as_array().cloned().unwrap_or_default();
+    let runs: u64 = points.iter().filter_map(|p| p["total"].as_u64()).sum();
+    let latencies: Vec<f64> = points
+        .iter()
+        .filter_map(|p| p["latency_avg"].as_f64())
+        .collect();
+    #[allow(clippy::cast_precision_loss)]
+    let average =
+        (!latencies.is_empty()).then(|| latencies.iter().sum::<f64>() / latencies.len() as f64);
+    let worst = points
+        .iter()
+        .filter_map(|p| p["latency_max"].as_f64())
+        .reduce(f64::max);
+    Ok(json!({
+        "check_id": id,
+        "range": range.as_str(),
+        "uptime": history["uptime"],
+        "runs": runs,
+        "latency_ms_average": average,
+        "latency_ms_worst": worst,
+        "incidents": history["incidents"],
+    }))
+}
+
+async fn set_alert_rule(api: &Api, args: &Value) -> Result<Value, String> {
+    let subject = text(args, "subject")?;
+    // A stack by name becomes its id, which is what rules keep.
+    let subject = match subject.strip_prefix("stack:") {
+        Some(named) if named.parse::<i64>().is_err() => {
+            let lookup = json!({ "stack": named });
+            format!("stack:{}", stack(api, &lookup).await?.id)
+        }
+        _ => subject.to_owned(),
+    };
+    let body = json!({
+        "subject": subject,
+        "metric": text(args, "metric")?,
+        "above_pct": args.get("above_pct").and_then(Value::as_f64).ok_or("missing argument: above_pct")?,
+        "for_min": number(args, "for_minutes", 5, 1440),
+        "enabled": args.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+    });
+    match args.get("id").and_then(Value::as_i64) {
+        Some(id) => {
+            api.request("PUT", &format!("/alerts/rules/{id}"), Some(body))
+                .await
+        }
+        None => api.request("POST", "/alerts/rules", Some(body)).await,
     }
 }
 

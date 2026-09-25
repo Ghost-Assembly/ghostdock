@@ -13,6 +13,7 @@ use shared::update::UpdateStatus;
 
 use crate::api;
 use crate::charts::Measure;
+use crate::checks::CheckList;
 use crate::confirm::Confirm;
 use crate::events::use_events;
 use crate::load::Load;
@@ -439,6 +440,8 @@ pub fn StackDetail() -> impl IntoView {
             "With auto-apply on, GhostDock deploys a change as soon as it finds one. \
              With it off, nothing happens until you say so."
         </p>
+
+        <CheckList stack=id />
 
         <h2 class="group-heading">"Source"</h2>
         {move || match stack.with(|s| s.as_ref().and_then(|s| s.git.clone())) {

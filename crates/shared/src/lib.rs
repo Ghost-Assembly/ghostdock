@@ -23,8 +23,10 @@
     allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)
 )]
 
+pub mod alerts;
 pub mod audit;
 pub mod auth;
+pub mod checks;
 pub mod cleanup;
 pub mod container;
 pub mod deployment;

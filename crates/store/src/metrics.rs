@@ -580,9 +580,190 @@ impl MetricsStore {
             .bind(now - QUARTER_DAYS * DAY)
             .execute(&mut *tx)
             .await?;
+        sqlx::query("DELETE FROM check_samples WHERE t < ?1")
+            .bind(now - CHECK_RUN_DAYS * DAY)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM check_hourly WHERE t < ?1")
+            .bind(now - QUARTER_DAYS * DAY)
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
         Ok(())
     }
+}
+
+/// How long each uptime check run is kept; hours are kept a year.
+pub const CHECK_RUN_DAYS: i64 = 7;
+const HOUR: i64 = 3_600;
+
+/// Uptime check history.
+impl MetricsStore {
+    /// Records one run: whether it succeeded, and how long it took.
+    pub async fn record_check(
+        &self,
+        check_id: i64,
+        t: i64,
+        ok: bool,
+        latency_ms: Option<u32>,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO check_samples (check_id, t, ok, latency_ms)
+             VALUES (?1, ?2, ?3, ?4)",
+        )
+        .bind(check_id)
+        .bind(t)
+        .bind(ok)
+        .bind(latency_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Folds the runs of every hour overlapping `[from, to)` into hourly
+    /// rows. Each hour is worked out from all of its runs so far, so
+    /// rolling up part of an hour now and all of it later is safe.
+    pub async fn rollup_checks(&self, from: i64, to: i64) -> Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO check_hourly (check_id, t, up, total, latency_avg, latency_max)
+             SELECT check_id, (t / 3600) * 3600, SUM(ok), COUNT(*), AVG(latency_ms), CAST(MAX(latency_ms) AS REAL)
+             FROM check_samples WHERE t >= ?1 AND t < ?2
+             GROUP BY check_id, t / 3600",
+        )
+        .bind(from - from.rem_euclid(HOUR))
+        .bind(to)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Runs that succeeded, and runs, since `since`, by check.
+    pub async fn check_uptime(&self, since: i64) -> Result<HashMap<i64, (u32, u32)>> {
+        self.counts(
+            "SELECT check_id, SUM(ok), COUNT(*) FROM check_samples WHERE t >= ?1 GROUP BY check_id",
+            since,
+        )
+        .await
+    }
+
+    /// [`Self::check_uptime`] from the hourly rows, for longer than runs
+    /// are kept.
+    pub async fn check_uptime_hourly(&self, since: i64) -> Result<HashMap<i64, (u32, u32)>> {
+        self.counts(
+            "SELECT check_id, SUM(up), SUM(total) FROM check_hourly WHERE t >= ?1 GROUP BY check_id",
+            since,
+        )
+        .await
+    }
+
+    async fn counts(&self, sql: &'static str, since: i64) -> Result<HashMap<i64, (u32, u32)>> {
+        let rows = sqlx::query_as::<_, (i64, i64, i64)>(sql)
+            .bind(since)
+            .fetch_all(&self.pool)
+            .await?;
+        let n = |v: i64| u32::try_from(v).unwrap_or(0);
+        Ok(rows
+            .into_iter()
+            .map(|(id, up, total)| (id, (n(up), n(total))))
+            .collect())
+    }
+
+    /// Each check's latest `n` runs since `since`, oldest first: the
+    /// latency, or `None` for a run that failed. A recent `since` keeps a
+    /// list of checks from walking a week of runs each time it is shown.
+    pub async fn check_recent(&self, n: u32, since: i64) -> Result<HashMap<i64, Vec<Option<u32>>>> {
+        let rows = sqlx::query_as::<_, (i64, bool, Option<i64>)>(
+            "SELECT check_id, ok, latency_ms FROM (
+                 SELECT check_id, t, ok, latency_ms,
+                        ROW_NUMBER() OVER (PARTITION BY check_id ORDER BY t DESC) AS r
+                 FROM check_samples WHERE t >= ?2
+             ) WHERE r <= ?1 ORDER BY check_id, t",
+        )
+        .bind(n)
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out: HashMap<i64, Vec<Option<u32>>> = HashMap::new();
+        for (id, ok, latency) in rows {
+            let latency = latency.and_then(|l| u32::try_from(l).ok()).filter(|_| ok);
+            out.entry(id).or_default().push(latency);
+        }
+        Ok(out)
+    }
+
+    /// A check's runs in `[from, to)` folded into at most `points` points:
+    /// from the runs themselves, or for [`Resolution::Quarter`] from the
+    /// hourly rows.
+    pub async fn check_series(
+        &self,
+        check_id: i64,
+        resolution: Resolution,
+        from: i64,
+        to: i64,
+        points: usize,
+    ) -> Result<Vec<shared::checks::CheckPoint>> {
+        let step = check_step(resolution, from, to, points);
+        let sql = match resolution {
+            Resolution::Quarter => {
+                "SELECT ?2 + ((t - ?2) / ?4) * ?4 AS b, SUM(up), SUM(total), AVG(latency_avg), MAX(latency_max)
+                 FROM check_hourly WHERE check_id = ?1 AND t >= ?2 AND t < ?3
+                 GROUP BY b ORDER BY b"
+            }
+            _ => {
+                "SELECT ?2 + ((t - ?2) / ?4) * ?4 AS b, SUM(ok), COUNT(*), AVG(latency_ms), CAST(MAX(latency_ms) AS REAL)
+                 FROM check_samples WHERE check_id = ?1 AND t >= ?2 AND t < ?3
+                 GROUP BY b ORDER BY b"
+            }
+        };
+        let rows = sqlx::query_as::<_, (i64, i64, i64, Option<f64>, Option<f64>)>(sql)
+            .bind(check_id)
+            .bind(from)
+            .bind(to)
+            .bind(step)
+            .fetch_all(&self.pool)
+            .await?;
+        let n = |v: i64| u32::try_from(v).unwrap_or(0);
+        Ok(rows
+            .into_iter()
+            .map(
+                |(t, up, total, latency_avg, latency_max)| shared::checks::CheckPoint {
+                    t,
+                    up: n(up),
+                    total: n(total),
+                    latency_avg,
+                    latency_max,
+                },
+            )
+            .collect())
+    }
+
+    /// Removes a check's history.
+    pub async fn forget_check(&self, check_id: i64) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        for sql in [
+            "DELETE FROM check_samples WHERE check_id = ?1",
+            "DELETE FROM check_hourly WHERE check_id = ?1",
+        ] {
+            sqlx::query(sql).bind(check_id).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+}
+
+/// Seconds each point of a check's series stands for: whole hours from the
+/// hourly rows, whole seconds from the runs, enough that `[from, to)` needs
+/// at most `points`.
+#[must_use]
+pub fn check_step(resolution: Resolution, from: i64, to: i64, points: usize) -> i64 {
+    let unit = if resolution == Resolution::Quarter {
+        HOUR
+    } else {
+        1
+    };
+    let up = |a: i64, b: i64| (a + b - 1) / b;
+    let points = i64::try_from(points).unwrap_or(i64::MAX).max(1);
+    up(up((to - from).max(0), unit), points).max(1) * unit
 }
 
 /// Seconds per bucket: a whole number of rows, enough that `[from, to)`

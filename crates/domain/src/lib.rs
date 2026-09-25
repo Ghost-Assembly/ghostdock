@@ -4,7 +4,9 @@
 //! process spawning. Everything here is a pure function of its inputs
 //! so it can be unit-tested without a Docker daemon or a database.
 
+pub mod alerts;
 pub mod auth;
+pub mod checks;
 pub mod contract;
 pub mod discovery;
 pub mod glob;

@@ -81,6 +81,18 @@ pub struct Sampler {
     /// copy the snapshot into every receiver, and each socket would
     /// serialize it again.
     ticks: Arc<watch::Sender<Option<Utf8Bytes>>>,
+    /// Each minute's folded figures, for resource alert rules.
+    minutes: Arc<watch::Sender<Option<Arc<Minute>>>>,
+}
+
+/// One minute's figures for every subject that reported, and the host's
+/// size to read them against.
+#[derive(Debug, Clone)]
+pub struct Minute {
+    pub t: i64,
+    pub rows: Vec<MinuteRow>,
+    pub cpus: Option<u32>,
+    pub memory: Option<u64>,
 }
 
 /// Sizing advice and the minute it was worked out.
@@ -105,7 +117,28 @@ impl Sampler {
             paths,
             sizing: Arc::default(),
             ticks: Arc::new(watch::Sender::new(None)),
+            minutes: Arc::new(watch::Sender::new(None)),
         }
+    }
+
+    /// Each minute's figures from now on.
+    #[must_use]
+    pub fn minutes(&self) -> watch::Receiver<Option<Arc<Minute>>> {
+        self.minutes.subscribe()
+    }
+
+    /// Hands a minute's figures to whoever reads them.
+    pub fn publish_minute(&self, t: i64, rows: Vec<MinuteRow>) {
+        let (cpus, memory) = {
+            let inner = self.lock();
+            (inner.host_cpus, inner.host_memory)
+        };
+        self.minutes.send_replace(Some(Arc::new(Minute {
+            t,
+            rows,
+            cpus,
+            memory,
+        })));
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -504,6 +537,8 @@ impl Sampler {
             every.tick().await;
             let minute = aligned(std::time::SystemTime::now(), 60) - 60;
             let rows = self.take_minute(minute);
+            // Alert rules read every minute, kept or not.
+            self.publish_minute(minute, rows.clone());
             let Some(store) = self.store.clone() else {
                 continue;
             };
@@ -527,6 +562,12 @@ impl Sampler {
                     }
                 }
                 Err(e) => tracing::warn!(error = %e, "could not record a minute's subjects"),
+            }
+            // Uptime check runs by the hour, the current hour afresh each
+            // minute: a handful of rows, and a month's uptime is then never
+            // more than a minute behind.
+            if let Err(e) = store.rollup_checks(minute, minute + 60).await {
+                tracing::warn!(error = %e, "could not roll up check runs");
             }
             if let Some((from, to)) = domain::metrics::quarter_due(minute + 60, rolled_to) {
                 match store.rollup(from, to).await {

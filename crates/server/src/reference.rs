@@ -144,6 +144,8 @@ pub fn api() -> Routes {
         .merge(crate::logs_across::routes())
         .merge(crate::exec::routes())
         .merge(crate::metrics::routes::routes())
+        .merge(crate::checks::routes::routes())
+        .merge(crate::alerts::routes::routes())
         .merge(crate::audit::routes())
         .merge(crate::events::routes())
 }

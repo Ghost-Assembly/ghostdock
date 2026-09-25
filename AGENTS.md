@@ -26,13 +26,14 @@ Run `just ci` and the browser tests a change touches before calling it done.
 | Crate | Owns | Must not |
 | --- | --- | --- |
 | `shared` | Serde wire types | Depend on anything but serde and chrono. It must build for wasm32. |
-| `domain` | Pure rules: health, grouping, update reasons, path contract | Do any I/O |
+| `domain` | Pure rules: health, grouping, update reasons, path contract, check states and alert rules | Do any I/O |
 | `docker` | Reading from the daemon via bollard | Write through Compose. **bollard is imported here and nowhere else.** |
 | `compose` | Running the `docker compose` CLI, the only writer | Know about HTTP or the database |
 | `gitsync` | Running `git` | Know about Compose or Docker |
 | `registry` | Manifest digests from registries | Know about anything else |
-| `store` | SQLite through sqlx, migrations, secret encryption, and `metrics.db` (resource history) | Hold business rules |
-| `server` | Axum routes, auth, the runner, the update checker, the sampler. The `ghostdock` binary. | — |
+| `probe` | Reaching services from GhostDock's own network: timed HTTP(S) and TCP probes, and the POSTs that deliver alerts | Know about checks, alerts, the database or Docker; return an error that repeats its URL |
+| `store` | SQLite through sqlx, migrations, secret encryption, and `metrics.db` (resource and uptime check history) | Hold business rules |
+| `server` | Axum routes, auth, the runner, the update checker, the sampler, the uptime check scheduler and alert delivery. The `ghostdock` binary. | — |
 | `web` | The Leptos client | Depend on anything but `shared` from this workspace |
 
 ## Invariants
@@ -46,10 +47,11 @@ design changed first.
   other client.
 - **Compose is never reimplemented.** Parsing is `docker compose config`;
   deploying is `docker compose up --wait`. `down` never passes `--volumes`.
-- **Secrets are write-only.** Credentials, environment values and token
-  secrets are never returned by the API, never logged, never written to the
-  audit trail. They are encrypted at rest with a purpose-bound key (token
-  secrets are stored only as hashes).
+- **Secrets are write-only.** Credentials, environment values, alert channel
+  URLs and tokens, and API token secrets are never returned by the API, never
+  logged, never written to the audit trail. They are encrypted at rest with a
+  purpose-bound key (API token secrets are stored only as hashes). A channel
+  is shown by its name, kind and the host its URL points at.
 - **Authorisation fails closed.** A handler taking a bare `Principal` admits
   signed-in people only. A handler an API token may reach takes
   `Authorized<perm::X>`. Accounts, tokens and passwords stay session-only.

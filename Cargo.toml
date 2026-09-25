@@ -7,6 +7,7 @@ members = [
     "crates/compose",
     "crates/gitsync",
     "crates/registry",
+    "crates/probe",
     "crates/store",
     "crates/server",
     "crates/web",
@@ -28,6 +29,7 @@ docker = { path = "crates/docker" }
 compose = { path = "crates/compose" }
 gitsync = { path = "crates/gitsync" }
 registry = { path = "crates/registry" }
+probe = { path = "crates/probe" }
 store = { path = "crates/store" }
 
 # Runtime

@@ -794,6 +794,7 @@ mod tests {
                 name: project.to_owned(),
                 source_kind: SourceKind::Inline,
                 busy: false,
+                checks_down: Vec::new(),
             }),
         }
     }

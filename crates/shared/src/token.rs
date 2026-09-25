@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Permission {
-    /// Stacks, containers, images, resource figures, history and update status.
-    /// Names, never secrets.
+    /// Stacks, containers, images, resource figures, history, update status,
+    /// uptime checks and alert settings. Names, never secrets.
     #[serde(rename = "host.view")]
     HostView,
     /// Compose files as registered. Inline files can hold pasted values.
@@ -67,19 +67,26 @@ pub enum Permission {
     /// Open a shell in a container, which is as good as root on the host.
     #[serde(rename = "shell.open")]
     ShellOpen,
+    /// Add, change and remove uptime checks.
+    #[serde(rename = "checks.manage")]
+    ChecksManage,
+    /// Add, test and remove alert channels, and set resource alert rules.
+    #[serde(rename = "alerts.manage")]
+    AlertsManage,
 }
 
 impl Permission {
     /// The areas permissions are grouped under, looking before touching.
-    pub const AREAS: [&'static str; 5] = [
+    pub const AREAS: [&'static str; 6] = [
         "Viewing",
         "Running stacks",
         "Changing stacks",
         "Sources",
         "Host",
+        "Monitoring",
     ];
 
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 20] = [
         Self::HostView,
         Self::ComposeRead,
         Self::LogsView,
@@ -98,6 +105,8 @@ impl Permission {
         Self::CredentialsManage,
         Self::CleanupRun,
         Self::ShellOpen,
+        Self::ChecksManage,
+        Self::AlertsManage,
     ];
 
     /// The stable name used on the wire and in storage.
@@ -122,6 +131,8 @@ impl Permission {
             Self::CredentialsManage => "credentials.manage",
             Self::CleanupRun => "cleanup.run",
             Self::ShellOpen => "shell.open",
+            Self::ChecksManage => "checks.manage",
+            Self::AlertsManage => "alerts.manage",
         }
     }
 
@@ -146,6 +157,7 @@ impl Permission {
             }
             Self::ReposManage | Self::CredentialsManage => "Sources",
             Self::CleanupRun | Self::ShellOpen => "Host",
+            Self::ChecksManage | Self::AlertsManage => "Monitoring",
         }
     }
 
@@ -154,7 +166,7 @@ impl Permission {
     pub fn describe(self) -> &'static str {
         match self {
             Self::HostView => {
-                "See stacks, containers, images, resource figures, history and update status"
+                "See stacks, containers, images, resource figures, history, update status and uptime checks"
             }
             Self::ComposeRead => "Read compose files, which may contain values pasted inline",
             Self::LogsView => "Read container logs, which often contain private details",
@@ -173,6 +185,10 @@ impl Permission {
             Self::CredentialsManage => "Add and remove the credentials repositories use",
             Self::CleanupRun => "Remove unused images and containers",
             Self::ShellOpen => "Open a shell in any container, which is root on the host",
+            Self::ChecksManage => "Add, change and remove uptime checks",
+            Self::AlertsManage => {
+                "Add, test and remove alert channels, and set resource alert rules"
+            }
         }
     }
 }

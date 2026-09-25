@@ -176,6 +176,8 @@ async fn serve() -> anyhow::Result<()> {
     if let Some(docker) = state.docker.clone() {
         server::watch::spawn(docker, state.runner.clone());
     }
+    state.checks.start().await;
+    state.alerts.clone().spawn_rules(&state.sampler);
 
     let listener = tokio::net::TcpListener::bind(&bind)
         .await

@@ -19,6 +19,7 @@ docker = { workspace = true }
 compose = { workspace = true }
 gitsync = { workspace = true }
 registry = { workspace = true }
+probe = { workspace = true }
 store = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }

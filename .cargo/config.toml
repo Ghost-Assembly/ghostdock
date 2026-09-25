@@ -1,0 +1,11 @@
+# The web client is the only crate built for wasm32.
+#
+# `erase_components` makes each Leptos component return a type-erased view
+# instead of its full nested view type. Rendering then goes through one
+# shared implementation rather than a copy compiled for every distinct view,
+# which cuts the bundle by about a sixth (brotli 471 KB to 402 KB), and with
+# it the cold load that tests/e2e/perf.mjs budgets. A cfg rather than a
+# feature because that is how Leptos exposes it. Setting RUSTFLAGS in the
+# environment replaces this, so do not set it for a wasm build.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "erase_components"]

@@ -78,16 +78,40 @@ impl Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-async fn read<T: DeserializeOwned>(response: Response) -> Result<T> {
-    let status = response.status();
-    if (200..300).contains(&status) {
-        return response.json::<T>().await.map_err(|e| Error {
-            message: format!("GhostDock sent a response we could not read: {e}"),
-            status: Some(status),
-        });
+/// A success whose body was not what it should be.
+fn unreadable(status: u16, detail: &str) -> Error {
+    Error {
+        message: format!("GhostDock sent a response we could not read: {detail}"),
+        status: Some(status),
     }
+}
 
-    Err(refusal(response).await)
+/// The body of a success, or the server's reason for refusing.
+///
+/// Sending, waiting and reading are deliberately not generic: written
+/// generically they were compiled again for every type the API returns,
+/// which was a sizeable part of the bundle. Only [`decode`] is per type.
+async fn exchange(method: &str, path: &str, json: Option<String>) -> Result<(u16, String)> {
+    let response = send(method, path, json).await?;
+    let status = response.status();
+    if !(200..300).contains(&status) {
+        return Err(refusal(response).await);
+    }
+    let text = response
+        .text()
+        .await
+        .map_err(|e| unreadable(status, &e.to_string()))?;
+    Ok((status, text))
+}
+
+/// Reads the body [`exchange`] handed back.
+fn decode<T: DeserializeOwned>((status, text): (u16, String)) -> Result<T> {
+    serde_json::from_str(&text).map_err(|e| unreadable(status, &e.to_string()))
+}
+
+/// A request body as JSON.
+fn encode<B: Serialize>(body: &B) -> Result<String> {
+    serde_json::to_string(body).map_err(|e| Error::network(&e.to_string()))
 }
 
 /// Success with nothing to read, or the server's reason for refusing.
@@ -120,8 +144,12 @@ async fn refusal(response: Response) -> Error {
             hook();
         }
     }
-    let message = response.json::<shared::ApiError>().await.map_or_else(
-        |_| format!("Request failed with status {status}"),
+    let message = match response.text().await {
+        Ok(text) => serde_json::from_str::<shared::ApiError>(&text).ok(),
+        Err(_) => None,
+    }
+    .map_or_else(
+        || format!("Request failed with status {status}"),
         |e| e.message,
     );
     Error {
@@ -130,38 +158,36 @@ async fn refusal(response: Response) -> Error {
     }
 }
 
-/// Sends a request without a body and hands back whatever answered.
-async fn call(method: &str, path: &str) -> Result<Response> {
-    request(method, &format!("{BASE}{path}"))
-        .send()
-        .await
-        .map_err(|e| Error::network(&e.to_string()))
-}
-
-/// Sends `body` as JSON and hands back whatever answered.
-async fn call_json<B: Serialize>(method: &str, path: &str, body: &B) -> Result<Response> {
-    request(method, &format!("{BASE}{path}"))
-        .json(body)
-        .map_err(|e| Error::network(&e.to_string()))?
-        .send()
-        .await
-        .map_err(|e| Error::network(&e.to_string()))
+/// Sends a request, with `json` as its body if given, and hands back
+/// whatever answered.
+async fn send(method: &str, path: &str, json: Option<String>) -> Result<Response> {
+    let builder = request(method, &format!("{BASE}{path}"));
+    match json {
+        Some(json) => builder
+            .header("Content-Type", "application/json")
+            .body(json),
+        None => builder.build(),
+    }
+    .map_err(|e| Error::network(&e.to_string()))?
+    .send()
+    .await
+    .map_err(|e| Error::network(&e.to_string()))
 }
 
 async fn get<T: DeserializeOwned>(path: &str) -> Result<T> {
-    read(call("GET", path).await?).await
+    decode(exchange("GET", path, None).await?)
 }
 
 async fn post<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result<T> {
-    read(call_json("POST", path, body).await?).await
+    decode(exchange("POST", path, Some(encode(body)?)).await?)
 }
 
 async fn put<B: Serialize, T: DeserializeOwned>(path: &str, body: &B) -> Result<T> {
-    read(call_json("PUT", path, body).await?).await
+    decode(exchange("PUT", path, Some(encode(body)?)).await?)
 }
 
 async fn post_empty<T: DeserializeOwned>(path: &str) -> Result<T> {
-    read(call("POST", path).await?).await
+    decode(exchange("POST", path, None).await?)
 }
 
 /// A DELETE that expects no body back.
@@ -169,7 +195,7 @@ async fn post_empty<T: DeserializeOwned>(path: &str) -> Result<T> {
 /// The server explains conflicts ("stacks are still defined in this
 /// repository"), and that explanation is the whole value of a refusal.
 async fn delete(path: &str) -> Result<()> {
-    done(call("DELETE", path).await?).await
+    done(send("DELETE", path, None).await?).await
 }
 
 pub async fn auth_status() -> Result<AuthStatus> {
@@ -197,7 +223,7 @@ pub async fn remove_account(id: i64) -> Result<()> {
 }
 
 pub async fn change_password(change: &PasswordChange) -> Result<()> {
-    done(call_json("PUT", "/auth/password", change).await?).await
+    done(send("PUT", "/auth/password", Some(encode(change)?)).await?).await
 }
 
 pub async fn tokens() -> Result<Vec<ApiToken>> {
@@ -213,7 +239,7 @@ pub async fn revoke_token(id: i64) -> Result<()> {
 }
 
 pub async fn logout() -> Result<()> {
-    let response = call("POST", "/auth/logout").await?;
+    let response = send("POST", "/auth/logout", None).await?;
     let status = response.status();
     // A 401 means there was no session left to end: signed out either way.
     if (200..300).contains(&status) || status == 401 {
@@ -340,7 +366,7 @@ pub async fn set_stack_env_one(
 }
 
 pub async fn delete_stack_env_one(stack_id: i64, key: &str) -> Result<StackEnvKeys> {
-    read(call("DELETE", &env_path(stack_id, key)).await?).await
+    decode(exchange("DELETE", &env_path(stack_id, key), None).await?)
 }
 
 #[allow(dead_code)]
@@ -421,6 +447,66 @@ pub async fn sizing() -> Result<Vec<Recommendation>> {
     get(&format!("/hosts/{HOST}/sizing")).await
 }
 
+// ---- uptime checks and alerts -----------------------------------------------
+
+pub async fn checks() -> Result<Vec<shared::checks::CheckSummary>> {
+    get(&format!("/hosts/{HOST}/checks")).await
+}
+
+pub async fn check(id: i64) -> Result<shared::checks::CheckSummary> {
+    get(&format!("/checks/{id}")).await
+}
+
+pub async fn check_history(id: i64, range: Range) -> Result<shared::checks::CheckHistory> {
+    get(&format!("/checks/{id}/history?range={}", range.as_str())).await
+}
+
+/// Adds a check, or with an id changes that one.
+pub async fn save_check(
+    id: Option<i64>,
+    input: &shared::checks::CheckInput,
+) -> Result<shared::checks::CheckSummary> {
+    match id {
+        Some(id) => put(&format!("/checks/{id}"), input).await,
+        None => post(&format!("/hosts/{HOST}/checks"), input).await,
+    }
+}
+
+pub async fn delete_check(id: i64) -> Result<()> {
+    delete(&format!("/checks/{id}")).await
+}
+
+pub async fn channels() -> Result<Vec<shared::alerts::AlertChannel>> {
+    get("/alerts/channels").await
+}
+
+pub async fn add_channel(
+    new: &shared::alerts::NewAlertChannel,
+) -> Result<shared::alerts::AlertChannel> {
+    post("/alerts/channels", new).await
+}
+
+pub async fn test_channel(id: i64) -> Result<shared::alerts::AlertDelivery> {
+    post_empty(&format!("/alerts/channels/{id}/test")).await
+}
+
+pub async fn rules() -> Result<Vec<shared::alerts::AlertRule>> {
+    get("/alerts/rules").await
+}
+
+pub async fn add_rule(new: &shared::alerts::NewAlertRule) -> Result<shared::alerts::AlertRule> {
+    post("/alerts/rules", new).await
+}
+
+pub async fn deliveries() -> Result<Vec<shared::alerts::AlertDelivery>> {
+    get("/alerts/deliveries").await
+}
+
+/// Removes an alert channel or rule: `what` is `channels` or `rules`.
+pub async fn remove_alert(what: &str, id: i64) -> Result<()> {
+    delete(&format!("/alerts/{what}/{id}")).await
+}
+
 /// Percent-encodes everything but unreserved characters, for a query value
 /// or a path segment. Subjects carry names and paths, which may hold
 /// anything a directory name can; a path segment holding `/`, `?` or `#`
@@ -441,7 +527,23 @@ pub fn component(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{component, env_path};
+    use super::{component, decode, env_path};
+
+    #[test]
+    fn a_body_is_decoded_or_said_to_be_unreadable() {
+        let read: super::Result<shared::ApiError> =
+            decode((200, r#"{"code":"x","message":"fine"}"#.to_owned()));
+        assert_eq!(read.map(|e| e.message), Ok("fine".to_owned()));
+
+        let e = decode::<shared::ApiError>((200, "<html>".to_owned())).err();
+        assert_eq!(e.as_ref().and_then(|e| e.status), Some(200));
+        assert!(
+            e.is_some_and(|e| e
+                .message
+                .starts_with("GhostDock sent a response we could not read: ")),
+            "a body that is not the expected JSON is said to be unreadable"
+        );
+    }
 
     #[test]
     fn a_path_segment_stays_one_segment() {

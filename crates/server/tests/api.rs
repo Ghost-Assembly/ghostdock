@@ -1603,6 +1603,8 @@ const GUARDED: &[(&str, &str, &str)] = &[
     ("credentials.manage", "POST", "/api/v1/credentials"),
     ("cleanup.run", "POST", "/api/v1/hosts/1/cleanup"),
     ("shell.open", "GET", "/api/v1/hosts/1/containers/x/exec"),
+    ("checks.manage", "POST", "/api/v1/hosts/1/checks"),
+    ("alerts.manage", "POST", "/api/v1/alerts/channels"),
 ];
 
 fn all_permissions() -> Vec<&'static str> {

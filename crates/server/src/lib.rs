@@ -5,10 +5,12 @@
 //! API so that it remains a replaceable client. See the design spec.
 
 pub mod accounts;
+pub mod alerts;
 pub mod app;
 pub mod audit;
 pub mod auth;
 pub mod checker;
+pub mod checks;
 pub mod detach;
 pub mod discovery;
 pub mod error;

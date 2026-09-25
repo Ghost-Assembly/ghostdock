@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use leptos::prelude::*;
-use shared::metrics::{Range, Reading, format_bytes, format_cores, format_rate};
+use shared::metrics::{Range, Reading, fixed, format_bytes, format_cores, format_rate};
 
 const W: f64 = 600.0;
 const H: f64 = 160.0;
@@ -23,6 +23,12 @@ pub enum Measure {
     DiskRead,
     DiskWrite,
     Load,
+    /// An uptime check's latency in ms, carried in a reading's CPU fields:
+    /// a chart draws any average and peak the same way.
+    Latency,
+    /// An uptime check's share of runs that succeeded, in percent, carried
+    /// in a reading's load field.
+    Uptime,
 }
 
 impl Measure {
@@ -36,6 +42,8 @@ impl Measure {
             Self::DiskRead => "Disk reads",
             Self::DiskWrite => "Disk writes",
             Self::Load => "Load",
+            Self::Latency => "Latency",
+            Self::Uptime => "Uptime",
         }
     }
 
@@ -45,13 +53,13 @@ impl Measure {
     pub fn values(self, r: &Reading) -> (Option<f64>, Option<f64>, Option<f64>) {
         let b = |v: Option<u64>| v.map(|v| v as f64);
         match self {
-            Self::Cpu => (r.cpu, r.cpu_max, None),
+            Self::Cpu | Self::Latency => (r.cpu, r.cpu_max, None),
             Self::Memory => (b(r.mem), b(r.mem_max), b(r.mem_limit)),
             Self::NetIn => (r.net_rx, None, None),
             Self::NetOut => (r.net_tx, None, None),
             Self::DiskRead => (r.io_read, None, None),
             Self::DiskWrite => (r.io_write, None, None),
-            Self::Load => (r.load, None, None),
+            Self::Load | Self::Uptime => (r.load, None, None),
         }
     }
 
@@ -60,7 +68,8 @@ impl Measure {
     #[must_use]
     pub fn ceiling(self, v: f64) -> f64 {
         match self {
-            Self::Cpu | Self::Load => nice_ceiling(v),
+            Self::Cpu | Self::Load | Self::Latency => nice_ceiling(v),
+            Self::Uptime => 100.0,
             _ => {
                 let mut unit = 1.0;
                 while v.is_finite() && v / unit >= 1024.0 {
@@ -83,7 +92,9 @@ impl Measure {
         match self {
             Self::Cpu => format_cores(v),
             Self::Memory => format_bytes(v.max(0.0).round() as u64),
-            Self::Load => format!("{v:.2}"),
+            Self::Load => fixed(v, 2),
+            Self::Latency => format!("{} ms", fixed(v, 0)),
+            Self::Uptime => format!("{}%", fixed(v, 1)),
             _ => format_rate(v),
         }
     }
@@ -153,7 +164,12 @@ pub fn path(points: &[(i64, Option<f64>)], t0: i64, t1: i64, max: f64, gap: i64)
                 .enumerate()
                 .map(|(i, (t, v))| {
                     let (x, y) = xy(*t, *v, t0, t1, max);
-                    format!("{}{x:.1} {y:.1}", if i == 0 { "M" } else { "L" })
+                    format!(
+                        "{}{} {}",
+                        if i == 0 { "M" } else { "L" },
+                        fixed(x, 1),
+                        fixed(y, 1)
+                    )
                 })
                 .collect::<Vec<_>>()
                 .join(" ")
@@ -175,12 +191,15 @@ pub fn area(points: &[(i64, Option<f64>)], t0: i64, t1: i64, max: f64, gap: i64)
                 .iter()
                 .map(|(t, v)| {
                     let (x, y) = xy(*t, *v, t0, t1, max);
-                    format!("L{x:.1} {y:.1}")
+                    format!("L{} {}", fixed(x, 1), fixed(y, 1))
                 })
                 .collect();
+            let h = fixed(H, 1);
             Some(format!(
-                "M{x0:.1} {H:.1} {} L{x1:.1} {H:.1} Z",
-                line.join(" ")
+                "M{} {h} {} L{} {h} Z",
+                fixed(x0, 1),
+                line.join(" "),
+                fixed(x1, 1)
             ))
         })
         .collect::<Vec<_>>()
@@ -302,7 +321,13 @@ pub fn Chart(
         points.with(|pts| match reading_at(pts, picked) {
             Some(r) => {
                 let (avg, peak, limit) = measure.values(r);
-                let value = avg.map_or_else(|| "nothing running".to_owned(), |v| measure.format(v));
+                // A check that failed has no latency; a stopped container no use.
+                let none = match measure {
+                    Measure::Latency => "no answer",
+                    Measure::Uptime => "no runs",
+                    _ => "nothing running",
+                };
+                let value = avg.map_or_else(|| none.to_owned(), |v| measure.format(v));
                 let peak = peak
                     .filter(|p| avg.is_some_and(|a| *p > a * 1.05))
                     .map(|p| format!(", peak {}", measure.format(p)))
@@ -384,8 +409,11 @@ pub fn Chart(
                     on:pointerleave=move |_| picked.set(None)>
                     <path class="chart-area" d=move || geometry.with(|g| Arc::clone(&g.area)) />
                     <path class="chart-peak" d=move || geometry.with(|g| Arc::clone(&g.peak)) />
-                    {move || geometry.with(|g| g.limit).map(|y| view! {
-                        <line class="chart-limit" x1="0" x2="600" y1=y y2=y />
+                    // Written as the paths are: an f64 attribute would bring in
+                    // Rust's float printer for this one line.
+                    {move || geometry.with(|g| g.limit).map(|y| {
+                        let y = fixed(y, 1);
+                        view! { <line class="chart-limit" x1="0" x2="600" y1=y.clone() y2=y /> }
                     })}
                 </svg>
                 // With nothing measured, a scale and times would only mislead.
@@ -445,17 +473,18 @@ pub fn fullness(used: u64, total: u64) -> (f64, &'static str, &'static str) {
 pub fn UsageBar(used: u64, total: u64, #[prop(into)] label: String) -> impl IntoView {
     let (share, state, words) = fullness(used, total);
     let percent = share * 100.0;
+    let whole = fixed(percent, 0);
     let said = if words.is_empty() {
-        format!("{percent:.0}% used")
+        format!("{whole}% used")
     } else {
-        format!("{percent:.0}% used, {words}")
+        format!("{whole}% used, {words}")
     };
     view! {
         <div class="usage" data-state=state role="meter" aria-label=label
-            aria-valuenow=format!("{percent:.0}") aria-valuemin="0" aria-valuemax="100"
+            aria-valuenow=whole aria-valuemin="0" aria-valuemax="100"
             aria-valuetext=said>
             <svg viewBox="0 0 100 1" preserveAspectRatio="none" aria-hidden="true">
-                <rect class="usage-fill" width=format!("{percent:.1}") height="1" />
+                <rect class="usage-fill" width=fixed(percent, 1) height="1" />
             </svg>
         </div>
     }

@@ -389,6 +389,8 @@ async fn every_tool_is_described_well_enough_to_be_used() {
             "credentials.manage",
             "cleanup.run",
             "shell.open",
+            "checks.manage",
+            "alerts.manage",
         ])
         .await;
     let list = s.rpc(&all, "tools/list", json!({})).await;
@@ -808,4 +810,201 @@ async fn logs_across_containers_cannot_carry_its_own_query() {
         let text = body["result"]["content"][0]["text"].as_str().unwrap();
         assert!(!text.contains("503"), "{arguments} reached the API: {text}");
     }
+}
+
+// ---- uptime checks and alerts ------------------------------------------------
+
+fn result_text(body: &Value) -> String {
+    body["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn checks_are_viewed_with_host_view_and_changed_with_checks_manage() {
+    let s = setup().await;
+    let viewer = s.token(&["host.view"]).await;
+    let names = tool_names(&s.rpc(&viewer, "tools/list", json!({})).await);
+    for tool in [
+        "list_checks",
+        "check_history",
+        "list_incidents",
+        "list_alert_rules",
+    ] {
+        assert!(names.contains(&tool.to_owned()), "{tool}: {names:?}");
+    }
+    for tool in [
+        "create_check",
+        "update_check",
+        "delete_check",
+        "set_alert_rule",
+    ] {
+        assert!(!names.contains(&tool.to_owned()), "{tool}: {names:?}");
+    }
+    // No channel tools at all: a URL or token typed into a conversation
+    // is a secret in its transcript.
+    let everything = s
+        .token(&["host.view", "checks.manage", "alerts.manage"])
+        .await;
+    let names = tool_names(&s.rpc(&everything, "tools/list", json!({})).await);
+    assert!(names.iter().all(|n| !n.contains("channel")), "{names:?}");
+}
+
+#[tokio::test]
+async fn a_check_is_made_changed_read_and_removed_through_the_api() {
+    let s = setup().await;
+    let token = s.token(&["host.view", "checks.manage"]).await;
+    let made = s
+        .tool(
+            &token,
+            "create_check",
+            json!({
+                "name": "Blog",
+                "kind": "http",
+                "target": "http://127.0.0.1:9/health",
+                "interval_seconds": 120,
+                "retries": 3,
+            }),
+        )
+        .await;
+    assert_eq!(made["result"]["isError"], json!(false), "{made}");
+    let made = &made["result"]["structuredContent"];
+    assert_eq!(made["name"], json!("Blog"));
+    assert_eq!(made["interval_seconds"], json!(120));
+    assert_eq!(made["state"], json!("pending"));
+    let id = made["id"].as_i64().unwrap();
+
+    // By name; only what is given changes.
+    let changed = s
+        .tool(
+            &token,
+            "update_check",
+            json!({ "check": "blog", "retries": 5 }),
+        )
+        .await;
+    assert_eq!(changed["result"]["isError"], json!(false), "{changed}");
+    assert_eq!(changed["result"]["structuredContent"]["retries"], json!(5));
+    assert_eq!(
+        changed["result"]["structuredContent"]["interval_seconds"],
+        json!(120)
+    );
+
+    let list = s.tool(&token, "list_checks", json!({})).await;
+    assert_eq!(
+        list["result"]["structuredContent"]["checks"][0]["id"],
+        json!(id)
+    );
+    let history = s
+        .tool(
+            &token,
+            "check_history",
+            json!({ "check": id.to_string(), "range": "7d" }),
+        )
+        .await;
+    assert_eq!(history["result"]["isError"], json!(false), "{history}");
+    assert_eq!(history["result"]["structuredContent"]["runs"], json!(0));
+
+    // The API's own refusal, passed on.
+    let bad = s
+        .tool(
+            &token,
+            "update_check",
+            json!({ "check": id.to_string(), "interval_seconds": 5 }),
+        )
+        .await;
+    assert_eq!(bad["result"]["isError"], json!(true));
+    assert!(result_text(&bad).contains("400"), "{bad}");
+
+    let gone = s
+        .tool(&token, "delete_check", json!({ "check": "Blog" }))
+        .await;
+    assert_eq!(gone["result"]["isError"], json!(false), "{gone}");
+    let list = s.tool(&token, "list_checks", json!({})).await;
+    assert_eq!(list["result"]["structuredContent"]["checks"], json!([]));
+}
+
+#[tokio::test]
+async fn a_check_tool_cannot_steer_its_request() {
+    let s = setup().await;
+    let token = s.token(&["host.view", "checks.manage"]).await;
+    for (tool, arguments) in [
+        ("check_history", json!({ "check": "1?range=1y" })),
+        ("check_history", json!({ "check": "../hosts" })),
+        ("check_history", json!({ "check": "1", "range": "24h&x=1" })),
+        ("delete_check", json!({ "check": "1/../../tokens/1" })),
+        ("update_check", json!({ "check": "1#x", "retries": 3 })),
+    ] {
+        let body = s.tool(&token, tool, arguments.clone()).await;
+        assert_eq!(
+            body["result"]["isError"],
+            json!(true),
+            "{tool} {arguments}: {body}"
+        );
+        let text = result_text(&body);
+        assert!(
+            !text.contains("HTTP 4") || text.contains("no check"),
+            "{tool} {arguments}: {text}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_alert_rule_is_set_and_listed() {
+    let s = setup().await;
+    let token = s.token(&["host.view", "alerts.manage"]).await;
+    let (status, stack) = s
+        .api(
+            "POST",
+            "/api/v1/hosts/1/stacks",
+            Some(json!({ "name": "Blog", "compose_yaml": COMPOSE })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{stack}");
+
+    let made = s
+        .tool(
+            &token,
+            "set_alert_rule",
+            json!({ "subject": "stack:blog", "metric": "memory", "above_pct": 80, "for_minutes": 10 }),
+        )
+        .await;
+    assert_eq!(made["result"]["isError"], json!(false), "{made}");
+    let rule = &made["result"]["structuredContent"];
+    assert_eq!(rule["subject"], json!(format!("stack:{}", stack["id"])));
+    let id = rule["id"].as_i64().unwrap();
+
+    let changed = s
+        .tool(
+            &token,
+            "set_alert_rule",
+            json!({ "id": id, "subject": "host", "metric": "disk", "above_pct": 90, "enabled": false }),
+        )
+        .await;
+    assert_eq!(
+        changed["result"]["structuredContent"]["enabled"],
+        json!(false),
+        "{changed}"
+    );
+
+    let refused = s
+        .tool(
+            &token,
+            "set_alert_rule",
+            json!({ "subject": "container:web", "metric": "disk", "above_pct": 90 }),
+        )
+        .await;
+    assert_eq!(refused["result"]["isError"], json!(true));
+
+    let list = s.tool(&token, "list_alert_rules", json!({})).await;
+    let rules = list["result"]["structuredContent"]["rules"]
+        .as_array()
+        .unwrap();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0]["metric"], json!("disk"));
+    let incidents = s.tool(&token, "list_incidents", json!({})).await;
+    assert_eq!(
+        incidents["result"]["structuredContent"]["incidents"],
+        json!([])
+    );
 }

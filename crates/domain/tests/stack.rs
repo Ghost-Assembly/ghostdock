@@ -159,6 +159,7 @@ mod merging {
             name: name.to_owned(),
             source_kind: SourceKind::Inline,
             busy: false,
+            checks_down: Vec::new(),
         }
     }
 
