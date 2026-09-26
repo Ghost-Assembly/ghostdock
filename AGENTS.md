@@ -121,7 +121,8 @@ design changed first.
 - **The healthcheck resolves `GHOSTDOCK_BIND` the way the server does.** A
   wildcard address (`0.0.0.0`, `::`) is not itself reachable, so the
   healthcheck asks loopback instead (`127.0.0.1`, `::1`); a hostname bind
-  uses the first address it resolves to, same as the server.
+  uses the first address it resolves to (the server tries each in order, so
+  they agree whenever the first one binds).
 - **An applied migration in `crates/store/migrations/` is never edited**,
   even to fix a typo. sqlx checksums each migration file at first run and
   refuses to start if an applied one no longer matches, which would break
