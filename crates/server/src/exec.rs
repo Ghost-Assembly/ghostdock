@@ -101,17 +101,40 @@ async fn run(
 /// argument counts once per word in it. Leading `NAME=value` words set the
 /// environment rather than name the program, and often carry a secret, so
 /// they are skipped and not counted.
+///
+/// Because quoting is not understood, a quote or backslash could carry part
+/// of a value into what looks like the program (`A="x y" cmd` reads `y"` as
+/// the program). So the program is named only when it is a plain name and
+/// nothing skipped before it held a quote or backslash; otherwise the entry
+/// says only how many words the command had.
 fn audited(command: &str) -> String {
-    let mut words = command.split_whitespace().skip_while(|w| is_assignment(w));
-    let Some(program) = words.next() else {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let skipped = words.iter().take_while(|w| is_assignment(w)).count();
+    let quoted = words
+        .iter()
+        .take(skipped)
+        .any(|w| w.contains(['"', '\'', '\\']));
+    let Some(program) = words.get(skipped) else {
         return "variable assignments only".to_owned();
     };
+    if quoted || !is_plain(program) {
+        return match words.len() {
+            1 => "a command, 1 word".to_owned(),
+            n => format!("a command, {n} words"),
+        };
+    }
     let program = shared::short(program, AUDITED_PROGRAM_CHARS);
-    match words.count() {
+    match words.len() - skipped - 1 {
         0 => format!("{program}, no arguments"),
         1 => format!("{program}, 1 argument"),
         n => format!("{program}, {n} arguments"),
     }
+}
+
+/// Whether a word could only be a program's name or path.
+fn is_plain(word: &str) -> bool {
+    word.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '+' | '-'))
 }
 
 /// Whether a word is a shell variable assignment, `NAME=value`.
@@ -306,7 +329,22 @@ mod tests {
             "curl, 2 arguments"
         );
         assert_eq!(audited("TOKEN=hunter2"), "variable assignments only");
-        // Not an assignment: `=` in a word that cannot be a name.
-        assert_eq!(audited("--opt=x run"), "--opt=x, 1 argument");
+        assert_eq!(audited("psql -h db"), "psql, 2 arguments");
+    }
+
+    #[test]
+    fn quoting_that_could_hide_a_secret_leaves_only_a_word_count() {
+        // Words are split without the shell's quoting, so a quoted or
+        // escaped assignment can spill a fragment of its value into what
+        // looks like the program.
+        assert_eq!(
+            audited(r#"PGPASSWORD="correct horse" psql -h db"#),
+            "a command, 5 words"
+        );
+        assert_eq!(audited("'TOKEN=s3cret' ./run"), "a command, 2 words");
+        assert_eq!(audited(r"TOKEN=a\ b cmd"), "a command, 3 words");
+        // Not a plain program name.
+        assert_eq!(audited("--opt=x run"), "a command, 2 words");
+        assert_eq!(audited("\"x\""), "a command, 1 word");
     }
 }
