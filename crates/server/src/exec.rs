@@ -42,22 +42,22 @@ pub fn routes() -> Routes {
         .post(
             "/hosts/{host_id}/containers/{id}/exec/run",
             shell,
-            "Runs one command in a container and returns its output; the command is audited",
+            "Runs one command in a container and returns its output; the program run is audited",
             run,
         )
 }
 
 const RUN_DEFAULT_SECS: u32 = 30;
 const RUN_MAX_SECS: u32 = 300;
-/// How much of a command the audit trail keeps.
-const AUDITED_COMMAND_CHARS: usize = 200;
+/// How much of a program's name the audit trail keeps.
+const AUDITED_PROGRAM_CHARS: usize = 64;
 
 /// Runs one command and returns what it printed, for a program rather than
 /// a person: nothing to attach, nothing left open.
 ///
-/// As powerful as a shell, and gated the same way. The command itself goes
-/// in the audit trail, as `sudo` logs commands: knowing a command was run
-/// without knowing which is not much of a record.
+/// As powerful as a shell, and gated the same way. The audit trail records
+/// which program ran and how many arguments it had, but never the text:
+/// see [`audited`].
 async fn run(
     principal: Authorized<perm::ShellOpen>,
     State(state): State<AppState>,
@@ -79,7 +79,7 @@ async fn run(
         &principal,
         "run command",
         &id,
-        Some(shared::short(command, AUDITED_COMMAND_CHARS)),
+        Some(&audited(command)),
     )
     .await;
     let result = client
@@ -90,6 +90,39 @@ async fn run(
         )
         .await?;
     Ok(axum::Json(result))
+}
+
+/// What the audit trail says of a command: the program and how many
+/// arguments follow it, never the text. Arguments are where passwords and
+/// tokens go (`mysql -p…`, `curl -H 'Authorization: …'`), and a trail that
+/// quoted them would be the easiest place in the product to read one.
+///
+/// Words are split on whitespace without the shell's quoting, so a quoted
+/// argument counts once per word in it. Leading `NAME=value` words set the
+/// environment rather than name the program, and often carry a secret, so
+/// they are skipped and not counted.
+fn audited(command: &str) -> String {
+    let mut words = command.split_whitespace().skip_while(|w| is_assignment(w));
+    let Some(program) = words.next() else {
+        return "variable assignments only".to_owned();
+    };
+    let program = shared::short(program, AUDITED_PROGRAM_CHARS);
+    match words.count() {
+        0 => format!("{program}, no arguments"),
+        1 => format!("{program}, 1 argument"),
+        n => format!("{program}, {n} arguments"),
+    }
+}
+
+/// Whether a word is a shell variable assignment, `NAME=value`.
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        let mut chars = name.chars();
+        chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
 }
 
 /// Upgrades to a WebSocket carrying one shell session.
@@ -254,4 +287,26 @@ async fn notify(mut socket: WebSocket, message: &str) -> Result<(), axum::Error>
         socket.send(Message::Text(json.into())).await?;
     }
     socket.close().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::audited;
+
+    #[test]
+    fn a_command_is_recorded_as_its_program_and_argument_count() {
+        assert_eq!(audited("id"), "id, no arguments");
+        assert_eq!(audited("ls /data"), "ls, 1 argument");
+        assert_eq!(
+            audited("mysql -u root -phunter2 shop"),
+            "mysql, 4 arguments"
+        );
+        assert_eq!(
+            audited("TOKEN=hunter2 A_1=x curl -s http://db"),
+            "curl, 2 arguments"
+        );
+        assert_eq!(audited("TOKEN=hunter2"), "variable assignments only");
+        // Not an assignment: `=` in a word that cannot be a name.
+        assert_eq!(audited("--opt=x run"), "--opt=x, 1 argument");
+    }
 }

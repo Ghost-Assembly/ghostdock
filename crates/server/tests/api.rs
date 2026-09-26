@@ -2263,6 +2263,56 @@ async fn a_container_the_daemon_does_not_have_is_not_found() {
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
 }
 
+#[tokio::test]
+async fn a_command_is_audited_by_its_program_never_its_text() {
+    // Arguments are where passwords go. Recorded before the command runs,
+    // so a container that does not exist still leaves the entry.
+    let Ok(docker) = docker::Client::connect() else {
+        eprintln!("SKIPPED: no Docker daemon reachable");
+        return;
+    };
+    if docker.version().await.is_err() {
+        eprintln!("SKIPPED: no Docker daemon reachable");
+        return;
+    }
+    let store = Store::open_in_memory().await.expect("store");
+    let root = tempfile::tempdir().expect("temp dir");
+    let mut c = Client {
+        router: app::build(AppState::new(store, Some(docker), root.path()), false, None),
+        cookie: None,
+        bearer: None,
+        _stacks_root: root,
+    };
+    c.send(
+        "POST",
+        "/api/v1/auth/bootstrap",
+        Some(Client::credentials("admin", PASSWORD)),
+    )
+    .await;
+
+    c.send(
+        "POST",
+        "/api/v1/hosts/1/containers/ghostdocktest-no-such-container/exec/run",
+        Some(json!({
+            "command": "PGPASSWORD=pw-in-env psql --password pw-in-args -c select",
+            "timeout_seconds": 5
+        })),
+    )
+    .await;
+
+    let (_, body) = c.send("GET", "/api/v1/audit", None).await;
+    let rendered = body.to_string();
+    assert!(!rendered.contains("pw-in-env"), "{rendered}");
+    assert!(!rendered.contains("pw-in-args"), "{rendered}");
+    let entry = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["action"] == json!("run command"))
+        .expect("the command is audited");
+    assert_eq!(entry["detail"], json!("psql, 4 arguments"));
+}
+
 // ---- operations on what was deployed --------------------------------------
 
 fn daemon_available() -> bool {
