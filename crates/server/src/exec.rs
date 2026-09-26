@@ -97,10 +97,10 @@ async fn run(
 /// tokens go (`mysql -p…`, `curl -H 'Authorization: …'`), and a trail that
 /// quoted them would be the easiest place in the product to read one.
 ///
-/// Words are split on whitespace without the shell's quoting, so a quoted
-/// argument counts once per word in it. Leading `NAME=value` words set the
-/// environment rather than name the program, and often carry a secret, so
-/// they are skipped and not counted.
+/// Words are split on space, tab and newline without the shell's quoting,
+/// so a quoted argument counts once per word in it. Leading `NAME=value`
+/// words set the environment rather than name the program, and often carry
+/// a secret, so they are skipped and not counted.
 ///
 /// The shell is not being parsed, so anything but plain characters before
 /// the program (a quote, a backslash, `$(…)`, a backtick) could carry part
@@ -110,7 +110,14 @@ async fn run(
 /// otherwise the entry says only how many words the command had. After the
 /// program nothing is read but the count.
 fn audited(command: &str) -> String {
-    let words: Vec<&str> = command.split_whitespace().collect();
+    // Split where sh's default IFS splits, space, tab and newline, and
+    // nowhere else: other whitespace (a no-break space, a bare `\r`) stays
+    // inside its word, as it does in the shell, so it cannot cut a value in
+    // two and leave its tail looking like the program.
+    let words: Vec<&str> = command
+        .split([' ', '\t', '\n'])
+        .filter(|w| !w.is_empty())
+        .collect();
     let skipped = words.iter().take_while(|w| is_assignment(w)).count();
     let Some(program) = words.get(skipped) else {
         return "variable assignments only".to_owned();
@@ -386,6 +393,20 @@ mod tests {
         assert_eq!(audited("X=a=b cmd"), "a command, 2 words");
         assert_eq!(audited("~/bin/run"), "a command, 1 word");
         assert_eq!(audited("TOKEN=\u{e9} cmd"), "a command, 2 words");
+    }
+
+    #[test]
+    fn words_split_only_where_the_shell_splits_them() {
+        // sh splits on space, tab and newline. Any other whitespace is part
+        // of the word, so a value holding one must not be cut in two.
+        let nbsp = audited("PGPASSWORD=hunter\u{a0}2-db.prod psql -h db");
+        assert_eq!(nbsp, "a command, 4 words");
+        assert!(!nbsp.contains("hunter") && !nbsp.contains("db.prod"));
+        let cr = audited("TOKEN=x\ry cmd");
+        assert_eq!(cr, "a command, 2 words");
+        assert!(!cr.contains('y'));
+        assert_eq!(audited("TOKEN=a\u{3000}b cmd"), "a command, 2 words");
+        assert_eq!(audited("A=1\tpsql\t-h\ndb"), "psql, 2 arguments");
     }
 
     #[test]
