@@ -292,11 +292,7 @@ async fn create_git_stack(
     // Refuse a path that leaves the repository here, rather than at deploy
     // time: the person typing it is the one who can fix it.
     let compose_path = new.compose_path.trim();
-    gitsync::resolve_in_repo(
-        std::path::Path::new("/tmp/ghostdock-validate"),
-        compose_path,
-    )
-    .map_err(|_| {
+    gitsync::check_in_repo(compose_path).map_err(|_| {
         ApiError::BadRequest("The compose file path must be inside the repository.".to_owned())
     })?;
 

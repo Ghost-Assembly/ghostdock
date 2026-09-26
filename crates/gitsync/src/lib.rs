@@ -121,14 +121,51 @@ pub fn auth_problem(stderr: &str, credential_sent: bool) -> Option<AuthProblem> 
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Resolves a repository-relative path, refusing anything that escapes,
-/// including through a symlink.
+/// Checks a repository-relative path by its components alone, refusing
+/// anything that could escape: an absolute path, `..`, or nothing at all.
+///
+/// Pure, touching nothing on disk: for what someone typed, before there is
+/// a checkout to look at. [`resolve_in_repo`] adds the symlink check once
+/// there is one.
 ///
 /// The compose file path is configuration, so it is attacker-adjacent
 /// whenever someone can register a stack. A whitelist of ordinary components
 /// is used rather than a search for `..`, since a blacklist only ever covers
 /// the encodings someone has thought of.
+pub fn check_in_repo(relative: &str) -> Result<()> {
+    lexically(Path::new(""), relative).map(|_| ())
+}
+
+/// Resolves a repository-relative path in the checkout at `root`, refusing
+/// anything that escapes, including through a symlink.
+///
+/// The path must pass [`check_in_repo`]. Every component is then ordinary,
+/// but git stores symlinks, so one in the checkout can still lead anywhere
+/// on the host: where the path exists, where it really leads must be inside
+/// as well. A path that does not exist, even one under a symlinked
+/// directory that leads out, is judged by its components alone and
+/// returned; callers check that the file exists before using it.
 pub fn resolve_in_repo(root: &Path, relative: &str) -> Result<PathBuf> {
+    let resolved = lexically(root, relative)?;
+    match (resolved.canonicalize(), root.canonicalize()) {
+        (Ok(real), Ok(real_root)) => {
+            if real == real_root || !real.starts_with(&real_root) {
+                return Err(Error::PathEscapes(relative.to_owned()));
+            }
+        }
+        (Err(e), _) if e.kind() == std::io::ErrorKind::NotFound => {}
+        (Err(source), _) | (_, Err(source)) => {
+            return Err(Error::Io {
+                context: format!("resolving {relative:?} in the repository"),
+                source,
+            });
+        }
+    }
+    Ok(resolved)
+}
+
+/// `relative` joined to `root`, if its components alone keep it inside.
+fn lexically(root: &Path, relative: &str) -> Result<PathBuf> {
     let candidate = Path::new(relative);
     if candidate.is_absolute() {
         return Err(Error::PathEscapes(relative.to_owned()));
@@ -148,25 +185,6 @@ pub fn resolve_in_repo(root: &Path, relative: &str) -> Result<PathBuf> {
 
     if resolved == root {
         return Err(Error::PathEscapes(relative.to_owned()));
-    }
-
-    // Every component is ordinary, but git stores symlinks, so one in the
-    // checkout can still lead anywhere on the host. Where the path exists,
-    // where it really leads must be inside as well. One that does not exist
-    // yet is judged by its components alone: nothing can be read through it.
-    match (resolved.canonicalize(), root.canonicalize()) {
-        (Ok(real), Ok(real_root)) => {
-            if real == real_root || !real.starts_with(&real_root) {
-                return Err(Error::PathEscapes(relative.to_owned()));
-            }
-        }
-        (Err(e), _) if e.kind() == std::io::ErrorKind::NotFound => {}
-        (Err(source), _) | (_, Err(source)) => {
-            return Err(Error::Io {
-                context: format!("resolving {relative:?} in the repository"),
-                source,
-            });
-        }
     }
     Ok(resolved)
 }

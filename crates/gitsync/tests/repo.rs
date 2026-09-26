@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use gitsync::{Error, Git, resolve_in_repo};
+use gitsync::{Error, Git, check_in_repo, resolve_in_repo};
 
 const COMPOSE: &str = "services:\n  web:\n    image: nginx:alpine\n";
 
@@ -212,6 +212,35 @@ fn a_symlink_cannot_lead_the_compose_path_out_of_the_repository() {
         root.join("compose/not-yet.yml"),
         "a file that does not exist yet is judged by its path alone"
     );
+    // So is a missing file under a link that leads out: there is nothing
+    // there to read, and callers check that the file exists before use.
+    assert_eq!(
+        resolve_in_repo(root, "dir/missing.yml").unwrap(),
+        root.join("dir/missing.yml"),
+    );
+}
+
+#[test]
+fn a_typed_compose_path_is_checked_by_its_components_alone() {
+    // At registration there is no checkout yet, so the check must not
+    // depend on anything on disk.
+    for bad in [
+        "../../../etc/passwd",
+        "compose/../../escape.yml",
+        "/etc/passwd",
+        "..",
+        "./..",
+        "",
+        ".",
+    ] {
+        assert!(
+            matches!(check_in_repo(bad), Err(Error::PathEscapes(_))),
+            "{bad:?} must be refused"
+        );
+    }
+    for good in ["compose/app.yml", "./compose/app.yml", "docker-compose.yml"] {
+        assert!(check_in_repo(good).is_ok(), "{good:?} is fine");
+    }
 }
 
 #[tokio::test]
