@@ -402,7 +402,7 @@ impl Runner {
                 .stack_compose_yaml(stack.id)
                 .await?
                 .unwrap_or_default();
-            let dir = self.compose.materialise(&stack.slug, &yaml, &vars).await?;
+            let dir = self.compose.materialize(&stack.slug, &yaml, &vars).await?;
             let env_file = (!vars.is_empty()).then(|| dir.join(compose::ENV_FILE));
             return Ok(Prepared {
                 project_dir: dir,

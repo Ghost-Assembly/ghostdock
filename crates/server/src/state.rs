@@ -42,7 +42,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// `stacks_root` holds one materialised project directory per stack.
+    /// `stacks_root` holds one materialized project directory per stack.
     pub fn new(store: Store, docker: Option<Client>, stacks_root: &Path) -> Self {
         Self::with_origins(store, docker, stacks_root, Vec::new())
     }

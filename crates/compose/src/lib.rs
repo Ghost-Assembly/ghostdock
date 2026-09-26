@@ -62,7 +62,7 @@ pub struct Outcome {
     pub output: String,
 }
 
-/// Runs `docker compose` against materialised project directories.
+/// Runs `docker compose` against materialized project directories.
 #[derive(Debug, Clone)]
 pub struct Compose {
     bin: String,
@@ -91,7 +91,7 @@ impl Compose {
     ///
     /// The slug is validated first: it becomes a directory name, so an
     /// unchecked one is a path-traversal primitive.
-    pub async fn materialise(
+    pub async fn materialize(
         &self,
         stack: &str,
         compose_yaml: &str,

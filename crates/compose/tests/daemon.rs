@@ -45,9 +45,9 @@ impl Fixture {
         let dir = tempfile::tempdir().expect("temp dir");
         let compose = Compose::new(dir.path());
         compose
-            .materialise(stack, yaml, &[])
+            .materialize(stack, yaml, &[])
             .await
-            .expect("materialise");
+            .expect("materialize");
         Self {
             compose,
             stack: stack.to_owned(),
