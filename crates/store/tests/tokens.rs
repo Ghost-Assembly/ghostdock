@@ -24,7 +24,7 @@ async fn a_token_authenticates_as_its_owner_with_its_permissions() {
 
     assert!(
         secret.starts_with("ghostdock_"),
-        "recognisable in a config file"
+        "recognizable in a config file"
     );
     assert!(secret.starts_with(&row.prefix));
 

@@ -73,7 +73,7 @@ fn main() {
 /// Rows are links. Dragging across one to highlight its text used to open
 /// whatever it pointed at, because a browser never starts a selection
 /// inside a link and treats the release as a click. A click whose pointer
-/// travelled more than a few pixels since going down, or that ends a
+/// traveled more than a few pixels since going down, or that ends a
 /// selection inside the row, was not a tap and is swallowed. Touch is left
 /// alone: a finger that moves scrolls, and never clicks.
 ///

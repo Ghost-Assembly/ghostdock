@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Lifecycle state, normalised from the daemon's string.
+/// Lifecycle state, normalized from the daemon's string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContainerState {
@@ -14,7 +14,7 @@ pub enum ContainerState {
     Removing,
     Exited,
     Dead,
-    /// The daemon reported something we do not recognise.
+    /// The daemon reported something we do not recognize.
     Unknown,
 }
 

@@ -105,7 +105,7 @@ fn up_waits_for_services_to_be_healthy() {
 }
 
 #[test]
-fn up_removes_orphans_and_honours_the_pull_policy() {
+fn up_removes_orphans_and_honors_the_pull_policy() {
     let argv = up(&project(), Pull::Always, 120);
     assert!(
         argv.contains(&"--remove-orphans".to_owned()),

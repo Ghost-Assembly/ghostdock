@@ -12,7 +12,7 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "CC0-1.0",
-    # Mozilla root CA bundle shipped by webpki-root-certs; permissive data licence.
+    # Mozilla root CA bundle shipped by webpki-root-certs; permissive data license.
     "CDLA-Permissive-2.0",
     # Boost Software License (xxhash-rust). Permissive and OSI-approved -- not
     # to be confused with the Business Source License, which is not.

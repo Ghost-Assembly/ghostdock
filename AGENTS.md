@@ -52,7 +52,7 @@ design changed first.
   logged, never written to the audit trail. They are encrypted at rest with a
   purpose-bound key (API token secrets are stored only as hashes). A channel
   is shown by its name, kind and the host its URL points at.
-- **Authorisation fails closed.** A handler taking a bare `Principal` admits
+- **Authorization fails closed.** A handler taking a bare `Principal` admits
   signed-in people only. A handler an API token may reach takes
   `Authorized<perm::X>`. Accounts, tokens and passwords stay session-only.
   `Authenticated` admits any session or valid token, and is only for what
@@ -84,7 +84,7 @@ design changed first.
   added to `ServerEvent::NAMES`. An SSE event must carry non-empty data, or
   browsers drop it.
 - **The UI never freezes, and leaving a screen never stops an action.**
-  Async work goes through `screen::Screen` (`load` is cancelled with its
+  Async work goes through `screen::Screen` (`load` is canceled with its
   screen, `act` never is); requests through `api::request`, which sets a
   deadline; clippy enforces both. The web crate denies panics. Large lists
   are bounded and batched per frame. `tabs`, `roam`, `stall` and `jank` in
@@ -118,7 +118,7 @@ design changed first.
 - New dependencies: standard library first, then first-party, then a
   well-maintained crate (1000+ stars, active, not deprecated). Owning a small
   piece of code beats a thin dependency.
-- Copy in the UI is short, specific and says what will happen. Colour means
+- Copy in the UI is short, specific and says what will happen. Color means
   state and nothing else, and state is never shown by color alone: each has
   a bar shape and an icon too, and words where there is room. A row with no
   state gets the neutral bar (`state="none"`).

@@ -109,7 +109,7 @@ async fn reads_the_digest_for_a_public_image() {
 
 #[tokio::test]
 async fn follows_the_token_challenge_for_a_private_image() {
-    // The whole dance: unauthorised, read where to ask, fetch a token, retry
+    // The whole dance: unauthorized, read where to ask, fetch a token, retry
     // with it. A registry does not publish a fixed token address, so this
     // cannot be short-circuited by guessing one.
     let fake = Fake::default();
@@ -127,7 +127,7 @@ async fn follows_the_token_challenge_for_a_private_image() {
     assert_eq!(
         fake.manifest_hits.load(Ordering::Relaxed),
         2,
-        "once unauthorised, once with the token"
+        "once unauthorized, once with the token"
     );
 }
 

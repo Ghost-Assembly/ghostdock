@@ -129,7 +129,7 @@ fn ls_remote_fails_when_a_ref_is_missing() {
 use gitsync::{AuthProblem, auth_problem};
 
 #[test]
-fn a_refused_credential_is_recognised_across_git_versions() {
+fn a_refused_credential_is_recognized_across_git_versions() {
     // Older git reports a rejected header by trying to prompt, which reads
     // exactly like having sent nothing; newer git says what happened.
     for stderr in [
@@ -151,7 +151,7 @@ fn a_refused_credential_is_recognised_across_git_versions() {
 }
 
 #[test]
-fn a_repository_hidden_from_the_credential_is_recognised() {
+fn a_repository_hidden_from_the_credential_is_recognized() {
     // GitHub answers "not found" rather than "forbidden" for a private
     // repository the token cannot see.
     let stderr =
@@ -161,7 +161,7 @@ fn a_repository_hidden_from_the_credential_is_recognised() {
 }
 
 #[test]
-fn a_credential_without_access_is_recognised() {
+fn a_credential_without_access_is_recognized() {
     // GitHub's words for a fine-grained token that is valid but was not
     // given this repository, even when only reading.
     let stderr = "remote: Write access to repository not granted.\nfatal: unable to access 'https://github.com/o/r.git/': The requested URL returned error: 403";

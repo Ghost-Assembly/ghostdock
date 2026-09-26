@@ -62,7 +62,7 @@ impl Store {
     /// The username and secret, for handing to git.
     ///
     /// The only path that opens a credential. Callers use it and drop it;
-    /// nothing serialises the result.
+    /// nothing serializes the result.
     pub async fn credential_secret(&self, id: i64) -> Result<Option<(String, String)>> {
         let row = sqlx::query_as::<_, (String, String)>(
             "SELECT username, secret_sealed FROM credentials WHERE id = ?1",

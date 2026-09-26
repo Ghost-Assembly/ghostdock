@@ -1,8 +1,8 @@
 /* GhostDock — an operator's status board.
  *
- * One rule governs colour: colour means state. Chrome is achromatic, and the
+ * One rule governs color: color means state. Chrome is achromatic, and the
  * only saturated values in the interface are the state colors below.
- * Nothing decorative is ever coloured, so a spot of colour always means
+ * Nothing decorative is ever colored, so a spot of color always means
  * something needs reading. And no state is shown by color alone: each also
  * has a shape (its bar) and an icon, and nearly always a word.
  *
@@ -32,7 +32,7 @@
   --ink-dim: #8d99a8;
   --ink-faint: #8591a0;
 
-  /* State. The only saturated colours in the product. */
+  /* State. The only saturated colors in the product. */
   --run: #3f9e7c;
   --degraded: #d2a24c;
   --bad: #e8736a;

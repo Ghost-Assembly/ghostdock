@@ -16,7 +16,7 @@ const HINT_LABELS: &[&str] = &["net.unraid.docker.icon", "homepage.icon"];
 
 /// Every bundled icon, sorted. Each is `crates/web/brand-icons/<slug>.svg`,
 /// named as Simple Icons names it. Only icons Simple Icons offers under
-/// CC0 are bundled; one under its brand's own licence is left out.
+/// CC0 are bundled; one under its brand's own license is left out.
 pub const BUNDLED: &[&str] = &[
     "actualbudget",
     "adguard",

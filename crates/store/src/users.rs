@@ -4,7 +4,7 @@ use crate::{Error, Result, Store, unique_or};
 
 /// A user as stored, including the password hash.
 ///
-/// Never serialise this. The API exposes [`shared::auth::User`], which has
+/// Never serialize this. The API exposes [`shared::auth::User`], which has
 /// no password material on it at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserRow {

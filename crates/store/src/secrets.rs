@@ -38,7 +38,7 @@ pub mod purpose {
 ///
 /// Named here for error messages only. Reading it is the caller's job: this
 /// crate takes the value as an argument, which keeps configuration out of the
-/// persistence layer and makes the behaviour testable without mutating the
+/// persistence layer and makes the behavior testable without mutating the
 /// process environment.
 pub const KEY_ENV: &str = "GHOSTDOCK_SECRET_KEY";
 

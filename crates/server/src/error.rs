@@ -2,7 +2,7 @@
 //!
 //! Every handler returns this, and it is the only place that decides a
 //! status code or what a client is told. Internal detail is logged, never
-//! serialised: an error message is not a place to leak schema or paths.
+//! serialized: an error message is not a place to leak schema or paths.
 
 use axum::Json;
 use axum::http::StatusCode;

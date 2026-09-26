@@ -66,7 +66,7 @@ fn a_deep_repository_path_survives() {
 }
 
 #[test]
-fn a_digest_is_recognised_and_pins_the_image() {
+fn a_digest_is_recognized_and_pins_the_image() {
     const SHA: &str = "sha256:abc123";
     let reference = parse(&format!("nginx@{SHA}")).unwrap();
 

@@ -86,7 +86,7 @@ pub struct Client {
 impl Client {
     /// Connects using the daemon's conventional local defaults.
     ///
-    /// Honours `DOCKER_HOST` when set, and discovers a rootless Podman
+    /// Honors `DOCKER_HOST` when set, and discovers a rootless Podman
     /// socket otherwise, so the same binary works on both runtimes.
     pub fn connect() -> Result<Self> {
         let inner = bollard::Docker::connect_with_defaults().map_err(Error::Unreachable)?;

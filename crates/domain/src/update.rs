@@ -28,7 +28,7 @@ pub fn reason(status: &UpdateStatus) -> Option<String> {
     }
 }
 
-/// Trims a reference to the part a person recognises.
+/// Trims a reference to the part a person recognizes.
 ///
 /// `ghcr.io/team/service/app:1.2` reads as `app:1.2`: the registry and
 /// namespace are the same for every image in a stack and crowd out the part

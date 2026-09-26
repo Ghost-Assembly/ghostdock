@@ -273,6 +273,6 @@ checks, audit records and revocation are the same ones. Credentials are not
 offered as a tool: a secret typed into a conversation ends up in its
 transcript.
 
-## Licence
+## License
 
 MIT. See [LICENSE](LICENSE).

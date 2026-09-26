@@ -1,4 +1,4 @@
-//! Git remote polling and working-tree materialisation.
+//! Git remote polling and working-tree materialization.
 //!
 //! Change detection uses `git ls-remote` against the tracked ref, which
 //! costs one round-trip and no clone. Like `compose`, this shells out to
@@ -75,9 +75,9 @@ impl AuthProblem {
             }
             Self::NoAccess => {
                 "The credential is valid but cannot read this repository. For a GitHub \
-                 fine-grained token: set the resource owner to the account or organisation \
+                 fine-grained token: set the resource owner to the account or organization \
                  that owns the repository, include the repository, and grant Contents: \
-                 read-only. An organisation may also need to approve the token."
+                 read-only. An organization may also need to approve the token."
             }
             Self::NotVisible => {
                 "The repository was not found. Check the URL, and that the credential has \
@@ -87,7 +87,7 @@ impl AuthProblem {
     }
 }
 
-/// Recognises an authentication failure in git's stderr.
+/// Recognizes an authentication failure in git's stderr.
 ///
 /// Needed because git's wording depends on its version: older releases
 /// report a rejected credential by trying to prompt for a username, which

@@ -1,4 +1,4 @@
-//! End-to-end API behaviour, exercised through the real router.
+//! End-to-end API behavior, exercised through the real router.
 
 use axum::Router;
 use axum::body::Body;

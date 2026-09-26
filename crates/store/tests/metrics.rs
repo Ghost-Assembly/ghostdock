@@ -351,12 +351,12 @@ async fn sizing_inputs_from_sql_match_the_rules_own_summary() {
     m.write_minute(&batch).await.unwrap();
 
     let got = m.sizing_summary(id, 0, 5000 * 60).await.unwrap();
-    assert_eq!(got, domain::sizing::summarise(&rows));
+    assert_eq!(got, domain::sizing::summarize(&rows));
     assert_eq!(got.mem_limit, Some(1 << 30), "the limit in force last");
 }
 
 #[tokio::test]
-async fn a_months_sizing_inputs_are_summarised_quickly() {
+async fn a_months_sizing_inputs_are_summarized_quickly() {
     let dir = tempfile::tempdir().unwrap();
     let m = MetricsStore::open(dir.path().join("metrics.db").to_str().unwrap())
         .await
@@ -370,7 +370,7 @@ async fn a_months_sizing_inputs_are_summarised_quickly() {
         m.write_minute(&rows).await.unwrap();
     }
     // Timed against the same machine reading the same month's rows into
-    // Rust, which is what summarising in SQL replaced: a fixed budget held
+    // Rust, which is what summarizing in SQL replaced: a fixed budget held
     // on a fast desk machine and failed on a slower CI runner. Each is the
     // best of three, so one slow scheduler slice decides nothing.
     let best = |times: &[std::time::Duration]| times.iter().copied().min().unwrap();
@@ -399,7 +399,7 @@ async fn a_months_sizing_inputs_are_summarised_quickly() {
     // out of SQLite.
     assert!(
         summary * 3 < read,
-        "summarising took {summary:?}, reading the rows took {read:?}"
+        "summarizing took {summary:?}, reading the rows took {read:?}"
     );
 }
 

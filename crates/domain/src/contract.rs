@@ -76,12 +76,12 @@ pub fn check(data_dir: &str, mounts: Option<&[Mount]>) -> PathContract {
     let Some(mounts) = mounts else {
         return PathContract::Unknown;
     };
-    let data = normalise(Path::new(data_dir));
+    let data = normalize(Path::new(data_dir));
 
     let governing = mounts
         .iter()
-        .filter(|m| data.starts_with(normalise(Path::new(&m.destination))))
-        .max_by_key(|m| normalise(Path::new(&m.destination)).components().count());
+        .filter(|m| data.starts_with(normalize(Path::new(&m.destination))))
+        .max_by_key(|m| normalize(Path::new(&m.destination)).components().count());
 
     let Some(mount) = governing else {
         return PathContract::Unmounted {
@@ -91,9 +91,9 @@ pub fn check(data_dir: &str, mounts: Option<&[Mount]>) -> PathContract {
 
     // Where the data directory is on the host: the mount's source, plus
     // whatever lies beneath the mount point.
-    let destination = normalise(Path::new(&mount.destination));
+    let destination = normalize(Path::new(&mount.destination));
     let beneath = data.strip_prefix(&destination).unwrap_or(Path::new(""));
-    let host = normalise(&Path::new(&mount.source).join(beneath));
+    let host = normalize(&Path::new(&mount.source).join(beneath));
 
     if host == data {
         PathContract::Satisfied
@@ -106,7 +106,7 @@ pub fn check(data_dir: &str, mounts: Option<&[Mount]>) -> PathContract {
 }
 
 /// Resolves `.` and trailing slashes lexically, without touching the disk.
-fn normalise(path: &Path) -> PathBuf {
+fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {

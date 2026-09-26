@@ -90,7 +90,7 @@ check-wasm:
     cargo check -p shared --target wasm32-unknown-unknown
 
 # Every scanner CI runs. Each covers something the others do not:
-#   cargo deny  Rust advisories, licences, and where crates come from
+#   cargo deny  Rust advisories, licenses, and where crates come from
 #   gitleaks    secrets anywhere in history
 #   hadolint    Dockerfile mistakes
 #   actionlint  workflow syntax and embedded shell
@@ -123,7 +123,7 @@ run: build-web
     GHOSTDOCK_BIND=127.0.0.1:8080 \
     cargo run --bin ghostdock
 
-# Remove build artefacts
+# Remove build artifacts
 clean:
     cargo clean
     rm -rf crates/web/dist .dev-data

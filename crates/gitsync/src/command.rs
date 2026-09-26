@@ -40,7 +40,7 @@ pub fn env(credential: Option<&Credential>) -> Vec<(String, String)> {
         ("GIT_TERMINAL_PROMPT".to_owned(), "0".to_owned()),
         // Read neither the system's nor the user's configuration. A
         // ~/.gitconfig often holds a credential helper (gh, a keychain), and
-        // honouring it would lend GhostDock its host user's access unasked:
+        // honoring it would lend GhostDock its host user's access unasked:
         // a private repository would open with no credential configured.
         // GhostDock supplies exactly what it means to and nothing else.
         ("GIT_CONFIG_NOSYSTEM".to_owned(), "1".to_owned()),
