@@ -19,6 +19,10 @@ edition = "2024"
 rust-version = "1.98"
 license = "MIT"
 repository = "https://github.com/Ghost-Assembly/ghostdock"
+# GhostDock ships as a container image (see AGENTS.md, Releases and images),
+# never as a published crate. Without this, nothing stops `cargo publish`
+# today only because unrelated crates already hold these names on crates.io.
+publish = false
 
 # Versions verified against crates.io on 2026-09-22.
 [workspace.dependencies]
