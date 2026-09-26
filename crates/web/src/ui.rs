@@ -167,7 +167,7 @@ pub fn ErrorNotice(#[prop(into)] error: Signal<Option<String>>) -> impl IntoView
     }
 }
 
-/// A labelled form control; the control is the child.
+/// A labeled form control; the control is the child.
 #[component]
 pub fn Field(label: &'static str, children: Children) -> impl IntoView {
     view! {
@@ -178,7 +178,26 @@ pub fn Field(label: &'static str, children: Children) -> impl IntoView {
     }
 }
 
-/// A labelled line of text to type. One component for every such field, so
+/// The search box over a list of log lines. What it shows and what typing
+/// does are the screen's: one filters at once, another waits for a pause.
+#[component]
+pub fn LogSearch(#[prop(into)] value: Signal<String>, on_input: Callback<String>) -> impl IntoView {
+    view! {
+        <Field label="Search">
+            <input
+                class="field-input"
+                type="search"
+                autocapitalize="none"
+                spellcheck="false"
+                placeholder="error, timeout, 500"
+                prop:value=move || value.get()
+                on:input=move |ev| on_input.run(event_target_value(&ev))
+            />
+        </Field>
+    }
+}
+
+/// A labeled line of text to type. One component for every such field, so
 /// its code is in the bundle once.
 #[component]
 pub fn TextField(
@@ -205,7 +224,7 @@ pub fn TextField(
     }
 }
 
-/// A labelled choice of one from `options`, each its value and its words.
+/// A labeled choice of one from `options`, each its value and its words.
 #[component]
 pub fn Pick(
     label: &'static str,
@@ -236,7 +255,7 @@ pub fn options(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// A labelled yes or no.
+/// A labeled yes or no.
 #[component]
 pub fn Tick(name: &'static str, detail: &'static str, value: RwSignal<bool>) -> impl IntoView {
     view! {

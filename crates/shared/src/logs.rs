@@ -32,7 +32,7 @@ pub struct Logs {
 
 /// One line from one of several containers read together.
 ///
-/// Labelled with where it came from, since lines from many containers are
+/// Labeled with where it came from, since lines from many containers are
 /// read as one stream and a reader has to tell them apart.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaggedLine {

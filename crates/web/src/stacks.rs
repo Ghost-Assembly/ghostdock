@@ -45,7 +45,7 @@ fn state_word(state: StackState) -> &'static str {
     }
 }
 
-/// Serialised form used by the CSS to draw the state bar.
+/// Serialized form used by the CSS to draw the state bar.
 fn state_key(state: StackState) -> &'static str {
     match state {
         StackState::Running => "running",

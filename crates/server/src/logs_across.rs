@@ -98,7 +98,7 @@ pub fn routes() -> Routes {
 }
 
 /// A container being read: how the daemon knows it, and how its lines are
-/// labelled.
+/// labeled.
 #[derive(Debug, Clone)]
 struct Target {
     id: String,

@@ -29,6 +29,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # For the provenance and SBOM attestations below: minting the Sigstore
+      # identity and writing the result to this repository's attestations.
+      id-token: write
+      attestations: write
     env:
       ARCH: ${{ matrix.arch }}
     steps:
@@ -57,6 +61,7 @@ jobs:
 
       - name: push
         if: github.event_name == 'push'
+        id: push
         env:
           # Through the environment, never interpolated into the script, so a
           # crafted value cannot become shell.
@@ -69,6 +74,34 @@ jobs:
           printf '%s' "$TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
           docker tag ghostdock:ci "${image}:sha-${SHA}-${ARCH}"
           docker push "${image}:sha-${SHA}-${ARCH}"
+          digest="$(docker inspect --format='{{index .RepoDigests 0}}' "${image}:sha-${SHA}-${ARCH}" | cut -d@ -f2)"
+          {
+            echo "image=${image}"
+            echo "digest=${digest}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Attached to this repository via the GitHub attestations API, checkable
+      # with `gh attestation verify`. One of each per architecture image; the
+      # combined manifest `publish` creates inherits neither, since it is
+      # never rebuilt, only pointed at these two.
+      - name: SBOM
+        if: github.event_name == 'push'
+        run: trivy image --quiet --format cyclonedx --output "sbom-${ARCH}.cdx.json" ghostdock:ci
+
+      - name: attest build provenance
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.push.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+
+      - name: attest SBOM
+        if: github.event_name == 'push'
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-name: ${{ steps.push.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          sbom-path: sbom-${{ matrix.arch }}.cdx.json
 
   # Joins the per-architecture images into one multi-platform tag.
   publish:

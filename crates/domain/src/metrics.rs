@@ -224,7 +224,7 @@ pub fn figures(key: &str, service: Option<&str>, points: &[Reading]) -> Containe
     }
 }
 
-/// At most `max` points, each folding a run of neighbours, so peaks survive.
+/// At most `max` points, each folding a run of neighbors, so peaks survive.
 #[must_use]
 pub fn thin(points: &[Reading], max: usize) -> Vec<Reading> {
     if points.len() <= max || max == 0 {

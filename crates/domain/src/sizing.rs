@@ -3,7 +3,7 @@
 //! Two steps: a [`Summary`] of the history (peaks, percentiles, the latest
 //! limit), then [`advise`] on that summary. The store computes the same
 //! summary in SQL, so a month of minutes never has to be read row by row;
-//! [`summarise`] is the definition it is tested against.
+//! [`summarize`] is the definition it is tested against.
 
 use shared::metrics::{Flag, Reading, Recommendation, Severity, format_bytes};
 
@@ -63,7 +63,7 @@ fn percentile(values: &mut [f64], p: f64) -> f64 {
 }
 
 #[must_use]
-pub fn summarise(minutes: &[Reading]) -> Summary {
+pub fn summarize(minutes: &[Reading]) -> Summary {
     let running: Vec<&Reading> = minutes
         .iter()
         .filter(|r| r.cpu.is_some() || r.mem.is_some())
@@ -121,7 +121,7 @@ pub fn recommend(h: &History) -> Recommendation {
         h.container,
         h.project,
         h.service,
-        &summarise(h.minutes),
+        &summarize(h.minutes),
         h.ooms,
     )
 }

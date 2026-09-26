@@ -2,7 +2,7 @@
 //!
 //! ARCHITECTURAL INVARIANT: this crate must compile for BOTH
 //! `x86_64-unknown-linux-gnu` and `wasm32-unknown-unknown`.
-//! It may depend only on serialisation crates — never on Leptos,
+//! It may depend only on serialization crates — never on Leptos,
 //! tokio, or anything HTTP. See AGENTS.md.
 //!
 //! It also runs in the browser, where a panic stops the whole client, so

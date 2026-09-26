@@ -394,6 +394,6 @@ fn jitter(span: Duration) -> Duration {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.subsec_nanos());
     let span_ms = u64::try_from(span.as_millis()).unwrap_or(u64::MAX).max(1);
-    // Spread by a large odd multiplier, so neighbours in time land apart.
+    // Spread by a large odd multiplier, so neighbors in time land apart.
     Duration::from_millis(u64::from(nanos).wrapping_mul(2_654_435_761) % span_ms)
 }

@@ -9,9 +9,9 @@
 //!
 //! Two kinds of work, treated differently:
 //!
-//! - Reading, to show something: [`Screen::load`]. Cancelled when the
+//! - Reading, to show something: [`Screen::load`]. Canceled when the
 //!   screen goes, since nobody is looking at the answer.
-//! - Doing, on the server: [`Screen::act`]. Never cancelled. A deploy, a
+//! - Doing, on the server: [`Screen::act`]. Never canceled. A deploy, a
 //!   removal, a save runs to the end whether or not anyone stays to watch;
 //!   only what happens afterwards on screen is skipped if it has gone.
 //!

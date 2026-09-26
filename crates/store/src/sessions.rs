@@ -14,7 +14,7 @@ use crate::{Result, Store};
 pub struct SessionRow {
     /// Canonical textual session id.
     pub id: String,
-    /// Serialised session payload. Opaque to this layer.
+    /// Serialized session payload. Opaque to this layer.
     pub data: Vec<u8>,
     /// Expiry as a Unix timestamp in seconds.
     pub expiry_date: i64,

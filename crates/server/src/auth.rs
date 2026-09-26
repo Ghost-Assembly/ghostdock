@@ -91,7 +91,7 @@ impl Principal {
 
     /// Resolves the caller from a bearer token if one was presented, else
     /// from the session cookie. A presented token is never silently ignored
-    /// in favour of a cookie: an invalid one is a failed request.
+    /// in favor of a cookie: an invalid one is a failed request.
     async fn resolve(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         if let Some(header) = parts.headers.get(axum::http::header::AUTHORIZATION) {
             let secret = header

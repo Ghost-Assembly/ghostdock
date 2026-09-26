@@ -475,7 +475,8 @@ impl Sampler {
         tokio::spawn(async move { minutes.run_minutes().await });
         if let Some(docker) = docker {
             let streams = self.clone();
-            tokio::spawn(async move { streams.run_streams(docker, runner).await });
+            let events = runner.subscribe();
+            tokio::spawn(async move { streams.run_streams(docker, events).await });
         }
     }
 
@@ -584,22 +585,27 @@ impl Sampler {
         }
     }
 
-    async fn run_streams(self, docker: docker::Client, runner: crate::runner::Runner) {
+    async fn run_streams(
+        self,
+        docker: docker::Client,
+        mut events: tokio::sync::broadcast::Receiver<shared::event::ServerEvent>,
+    ) {
         use futures::StreamExt as _;
         let streaming: Arc<Mutex<std::collections::HashSet<String>>> = Arc::default();
-        let mut events = runner.subscribe();
         let mut reconcile = tokio::time::interval(std::time::Duration::from_secs(30));
         loop {
             tokio::select! {
                 _ = reconcile.tick() => {}
-                event = events.recv() => {
-                    if let Ok(shared::event::ServerEvent::ContainerChanged { change }) = event {
+                event = events.recv() => match event {
+                    Ok(shared::event::ServerEvent::ContainerChanged { change }) => {
                         self.note_event(&change).await;
                         if change.action != "start" { continue; }
-                    } else {
-                        continue;
                     }
-                }
+                    // Every later receive would fail at once: stop rather
+                    // than spin.
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    _ => continue,
+                },
             }
             let containers = match docker.list_containers().await {
                 Ok(list) => {
@@ -761,6 +767,19 @@ mod tests {
     use super::*;
     use shared::event::ContainerChange;
     use shared::metrics::Severity;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn container_streams_stop_when_the_events_end() {
+        // Closed is permanent: every later receive fails at once, so a loop
+        // that only skips it spins a core for the life of the process.
+        let sampler = Sampler::new(None, HostPaths::default());
+        let (sender, events) = tokio::sync::broadcast::channel(1);
+        drop(sender);
+        let docker = docker::Client::connect().unwrap();
+        let task = tokio::spawn(sampler.run_streams(docker, events));
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(5), task).await;
+        assert!(ended.is_ok(), "still looping over a closed channel");
+    }
 
     #[tokio::test]
     async fn an_oom_kill_changes_the_advice_at_once() {

@@ -1,4 +1,4 @@
-# Security
+# Security policy
 
 GhostDock holds the Docker socket, which is root on the host. A vulnerability in
 it is therefore usually a vulnerability in the host, and reports are taken
@@ -16,9 +16,11 @@ anything is disclosed.
 ## What is in scope
 
 Anything that lets someone without an account act on the host, lets one
-account exceed what it should be able to do, or discloses a stored secret --
-Git credentials and stack environment variables are encrypted at rest and
-must never be readable back through GhostDock.
+account exceed what it should be able to do, or discloses a stored secret —
+Git credentials, stack environment variables, and alert channel URLs and
+tokens are encrypted at rest and must never be readable back through
+GhostDock; API token secrets are stored only as hashes and cannot be
+recovered at all.
 
 ## Deliberate design decisions
 

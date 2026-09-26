@@ -286,7 +286,7 @@ const TOOLS: &[Tool] = &[
     Tool {
         name: "logs_across",
         title: "Read logs across containers",
-        description: "The latest output of several containers merged into one timeline, each line labelled with its container: every running container, one stack's, or named ones, at most 50. Optionally only lines containing some text or only stderr.",
+        description: "The latest output of several containers merged into one timeline, each line labeled with its container: every running container, one stack's, or named ones, at most 50. Optionally only lines containing some text or only stderr.",
         permission: Permission::LogsView,
         read_only: true,
         destructive: false,
@@ -874,7 +874,7 @@ pub(super) async fn run(tool: &Tool, api: &Api, args: &Value) -> Result<Value, S
                     range.as_str()
                 ))
                 .await?;
-            Ok(summarise(&series))
+            Ok(summarize(&series))
         }
         "sizing_recommendations" => Ok(named(
             "recommendations",
@@ -1211,7 +1211,7 @@ async fn set_alert_rule(api: &Api, args: &Value) -> Result<Value, String> {
 
 /// A series as a model can reason with it: average, 95th percentile and
 /// peak, not three hundred points.
-fn summarise(series: &Value) -> Value {
+fn summarize(series: &Value) -> Value {
     let points = series["points"].as_array().cloned().unwrap_or_default();
     let stats = |avg: &str, peak: &str| {
         let mut values: Vec<f64> = points.iter().filter_map(|p| p[avg].as_f64()).collect();

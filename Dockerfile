@@ -1,20 +1,25 @@
 # syntax=docker/dockerfile:1
 
 # Base images are pinned by digest so a rebuild produces the same image
-# rather than whatever the tag points at that day. They are written out in
-# the FROM lines rather than as ARGs so Dependabot can see and update them.
+# rather than whatever the tag points at that day; the digests stay literal
+# in the FROM lines so Dependabot can see and update them. The version
+# numbers that go with those digests are ARGs instead, one declaration each,
+# so bumping either one is a single edit rather than a find-and-replace.
+ARG RUST_VERSION=1.98.1
+ARG TRUNK_VERSION=0.21.14
 
 # ---- tools ---------------------------------------------------------------
 # Built from source with --locked rather than downloaded as a binary, and in
 # its own stage so a change to GhostDock's source does not rebuild it.
-FROM docker.io/library/rust:1.98.1-trixie@sha256:a8a5f0a1e5fe7dfe1d352591e4a1c7dd2c08fd70475cae872cf3458ba0df0546 AS tools
+FROM docker.io/library/rust:${RUST_VERSION}-trixie@sha256:a8a5f0a1e5fe7dfe1d352591e4a1c7dd2c08fd70475cae872cf3458ba0df0546 AS tools
+ARG TRUNK_VERSION
 # brotli: the web build writes precompressed assets (crates/web/precompress.sh).
 # hadolint ignore=DL3008
 RUN apt-get update \
  && apt-get install -y --no-install-recommends brotli \
  && rm -rf /var/lib/apt/lists/* \
  && rustup target add wasm32-unknown-unknown \
- && cargo install --locked trunk@0.21.14
+ && cargo install --locked trunk@${TRUNK_VERSION}
 
 # ---- build ---------------------------------------------------------------
 FROM tools AS build

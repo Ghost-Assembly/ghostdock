@@ -19,25 +19,32 @@ edition = "2024"
 rust-version = "1.98"
 license = "MIT"
 repository = "https://github.com/Ghost-Assembly/ghostdock"
+# GhostDock ships as a container image (see AGENTS.md, Releases and images),
+# never as a published crate. Without this, nothing stops `cargo publish`
+# today only because unrelated crates already hold these names on crates.io.
+publish = false
 
 # Versions verified against crates.io on 2026-09-22.
 [workspace.dependencies]
-# Internal
-shared = { path = "crates/shared" }
-domain = { path = "crates/domain" }
-docker = { path = "crates/docker" }
-compose = { path = "crates/compose" }
-gitsync = { path = "crates/gitsync" }
-registry = { path = "crates/registry" }
-probe = { path = "crates/probe" }
-store = { path = "crates/store" }
+# Internal. A `version` alongside `path` is never published; it is here
+# only so cargo-deny's `wildcards = "deny"` (deny.toml) treats these as
+# ordinary pinned dependencies rather than the unbounded `*` it forbids.
+shared = { path = "crates/shared", version = "0.1.0" }
+domain = { path = "crates/domain", version = "0.1.0" }
+docker = { path = "crates/docker", version = "0.1.0" }
+compose = { path = "crates/compose", version = "0.1.0" }
+gitsync = { path = "crates/gitsync", version = "0.1.0" }
+registry = { path = "crates/registry", version = "0.1.0" }
+probe = { path = "crates/probe", version = "0.1.0" }
+store = { path = "crates/store", version = "0.1.0" }
 
 # Runtime
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "process", "fs", "io-util", "net", "signal", "sync", "time"] }
 futures = "0.3.34"
 tokio-stream = { version = "0.1.19", features = ["sync"] }
 
-# Serialisation — `shared` may depend ONLY on these (must build for wasm32).
+# Serialization. `shared` may depend ONLY on serde and chrono (must build
+# for wasm32); serde_json and uuid below are for other crates.
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 chrono = { version = "0.4.45", features = ["serde"] }
@@ -99,7 +106,7 @@ lto = "thin"
 codegen-units = 1
 strip = true
 
-# SQLite is C compiled by the build script; unoptimised it is several times
+# SQLite is C compiled by the build script; unoptimized it is several times
 # slower, which makes debug-build timings (the metrics read budget) lie.
 [profile.dev.package.libsqlite3-sys]
 opt-level = 3

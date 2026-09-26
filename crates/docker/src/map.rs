@@ -99,7 +99,7 @@ fn map_health(
     }
 }
 
-/// Normalises the daemon's port list for display.
+/// Normalizes the daemon's port list for display.
 ///
 /// A published port on a dual-stack host is reported once per address family
 /// (`0.0.0.0` and `::`), which is one binding, not two. Collapsing them keeps

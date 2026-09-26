@@ -14,8 +14,7 @@ cargo-binstall = "1.23.0"
 "cargo:trunk" = "0.21.14"
 "cargo:cargo-deny" = "0.20.2"
 
-# Scanners run by `just security`. All free for any visibility; see the
-# security-scanning notes in the design doc for what was chosen and why.
+# Scanners run by `just security`. All free for any visibility.
 gitleaks = "8.30.1"
 
 # Only for the browser tests, which drive Chromium through Playwright.
@@ -26,4 +25,4 @@ actionlint = "1.7.12"
 zizmor = "1.30.1"
 
 [env]
-RUST_LOG = "info,ghostdock=debug"
+RUST_LOG = "info,ghostdock=debug,server=debug"

@@ -388,7 +388,7 @@ impl MetricsStore {
 
     /// What sizing needs from a container's minutes in `[from, to)`, worked
     /// out by SQLite: aggregates and nearest-rank percentiles, the same
-    /// definitions as `domain::sizing::summarise`, without decoding a month
+    /// definitions as `domain::sizing::summarize`, without decoding a month
     /// of rows.
     pub async fn sizing_summary(&self, subject_id: i64, from: i64, to: i64) -> Result<Summary> {
         // The limit is the one in force at the last running minute; failing

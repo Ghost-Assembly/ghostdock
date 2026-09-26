@@ -40,7 +40,7 @@ pub fn is_allowed(origin: Option<&str>, host: Option<&str>, allowed: &[String]) 
 ///
 /// Compared against the Host header, which carries a port only when it is
 /// not the default -- and an origin is written the same way, so the two are
-/// directly comparable without normalising ports.
+/// directly comparable without normalizing ports.
 fn authority_of(origin: &str) -> Option<&str> {
     let rest = origin
         .strip_prefix("https://")

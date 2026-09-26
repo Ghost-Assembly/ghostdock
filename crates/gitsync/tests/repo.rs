@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use gitsync::{Error, Git, resolve_in_repo};
+use gitsync::{Error, Git, check_in_repo, resolve_in_repo};
 
 const COMPOSE: &str = "services:\n  web:\n    image: nginx:alpine\n";
 
@@ -179,6 +179,68 @@ fn a_compose_path_cannot_escape_the_repository() {
         resolve_in_repo(root, "./compose/app.yml").unwrap(),
         root.join("compose/app.yml")
     );
+}
+
+#[test]
+fn a_symlink_cannot_lead_the_compose_path_out_of_the_repository() {
+    // Git stores symlinks, so a repository can carry one pointing anywhere
+    // on the host; every component is ordinary, and only the file system
+    // knows where it leads.
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.yml"), "not yours").unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    let root = repo.path();
+    std::fs::create_dir_all(root.join("compose")).unwrap();
+    std::fs::write(root.join("compose/app.yml"), COMPOSE).unwrap();
+    std::os::unix::fs::symlink(outside.path().join("secret.yml"), root.join("file.yml")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), root.join("dir")).unwrap();
+    std::os::unix::fs::symlink(root.join("compose/app.yml"), root.join("inside.yml")).unwrap();
+
+    for bad in ["file.yml", "dir/secret.yml"] {
+        assert!(
+            matches!(resolve_in_repo(root, bad), Err(Error::PathEscapes(_))),
+            "{bad:?} leads outside and must be refused"
+        );
+    }
+    assert_eq!(
+        resolve_in_repo(root, "inside.yml").unwrap(),
+        root.join("inside.yml"),
+        "a link that stays inside is fine"
+    );
+    assert_eq!(
+        resolve_in_repo(root, "compose/not-yet.yml").unwrap(),
+        root.join("compose/not-yet.yml"),
+        "a file that does not exist yet is judged by its path alone"
+    );
+    // So is a missing file under a link that leads out: there is nothing
+    // there to read, and callers check that the file exists before use.
+    assert_eq!(
+        resolve_in_repo(root, "dir/missing.yml").unwrap(),
+        root.join("dir/missing.yml"),
+    );
+}
+
+#[test]
+fn a_typed_compose_path_is_checked_by_its_components_alone() {
+    // At registration there is no checkout yet, so the check must not
+    // depend on anything on disk.
+    for bad in [
+        "../../../etc/passwd",
+        "compose/../../escape.yml",
+        "/etc/passwd",
+        "..",
+        "./..",
+        "",
+        ".",
+    ] {
+        assert!(
+            matches!(check_in_repo(bad), Err(Error::PathEscapes(_))),
+            "{bad:?} must be refused"
+        );
+    }
+    for good in ["compose/app.yml", "./compose/app.yml", "docker-compose.yml"] {
+        assert!(check_in_repo(good).is_ok(), "{good:?} is fine");
+    }
 }
 
 #[tokio::test]

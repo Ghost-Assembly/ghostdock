@@ -16,7 +16,7 @@ use web_sys::{CloseEvent, MessageEvent};
 
 use crate::load::Load;
 use crate::screen::Screen;
-use crate::ui::{ErrorNotice, Field, Topbar, pinned, to_bottom};
+use crate::ui::{ErrorNotice, LogSearch, Topbar, pinned, to_bottom};
 use crate::{api, socket};
 
 /// Most lines kept. Following a chatty host for an hour would otherwise
@@ -606,25 +606,17 @@ pub fn LogsAcross() -> impl IntoView {
 
         <ErrorNotice error />
 
-        <Field label="Search">
-            <input
-                class="field-input"
-                type="search"
-                autocapitalize="none"
-                spellcheck="false"
-                placeholder="error, timeout, 500"
-                prop:value=move || typed.get()
-                on:input=move |ev| {
-                    let value = event_target_value(&ev);
-                    typed.set(value.clone());
-                    screen.after(SEARCH_AFTER, move || {
-                        if typed.with_untracked(|now| *now == value) {
-                            filter.set(value);
-                        }
-                    });
-                }
-            />
-        </Field>
+        <LogSearch
+            value=typed
+            on_input=Callback::new(move |value: String| {
+                typed.set(value.clone());
+                screen.after(SEARCH_AFTER, move || {
+                    if typed.with_untracked(|now| *now == value) {
+                        filter.set(value);
+                    }
+                });
+            })
+        />
 
         <div class="actions actions-pair">
             <button

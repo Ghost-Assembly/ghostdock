@@ -24,7 +24,8 @@ lint:
     cargo clippy -p web --target wasm32-unknown-unknown -- -D warnings
 
 # Run the test suite.
-# `web` is excluded: it targets wasm32 and is exercised by `test-web`.
+# `web` builds only for wasm32 (see `check-wasm`), but its pure logic (chart
+# geometry, encoders, …) is also tested natively, so it runs here too.
 test:
     cargo test --workspace --exclude web --all-features
     cargo test -p web
@@ -41,9 +42,10 @@ test-e2e: build
     tests/e2e/run.sh
 
 # Mobile smoke path through a real browser.
-# Needs a server running against a FRESH database, since it exercises
-# first-run setup. Not part of `ci` yet: that needs browsers installed on the
-# runner, which is packaging work.
+# Needs a server already running against a FRESH database, since it exercises
+# first-run setup. Not part of `ci` yet: unlike `test-e2e`, which starts and
+# stops its own server per test, this one expects the server lifecycle to
+# already be handled by the caller.
 #   GHOSTDOCK_URL=http://127.0.0.1:8080 just test-web
 test-web:
     # Installed at the repo root: ES modules resolve node_modules by walking
@@ -90,7 +92,7 @@ check-wasm:
     cargo check -p shared --target wasm32-unknown-unknown
 
 # Every scanner CI runs. Each covers something the others do not:
-#   cargo deny  Rust advisories, licences, and where crates come from
+#   cargo deny  Rust advisories, licenses, and where crates come from
 #   gitleaks    secrets anywhere in history
 #   hadolint    Dockerfile mistakes
 #   actionlint  workflow syntax and embedded shell
@@ -123,7 +125,7 @@ run: build-web
     GHOSTDOCK_BIND=127.0.0.1:8080 \
     cargo run --bin ghostdock
 
-# Remove build artefacts
+# Remove build artifacts
 clean:
     cargo clean
     rm -rf crates/web/dist .dev-data

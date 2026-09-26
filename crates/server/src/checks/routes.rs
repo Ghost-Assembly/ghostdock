@@ -71,7 +71,7 @@ async fn list(
 ) -> Result<Json<Vec<CheckSummary>>, ApiError> {
     crate::hosts::known(&state, host_id).await?;
     let checks = state.store.checks_list(host_id).await?;
-    Ok(Json(summarise(&state, checks).await?))
+    Ok(Json(summarize(&state, checks).await?))
 }
 
 async fn one(
@@ -252,12 +252,12 @@ fn share(up: u64, total: u64) -> Option<f64> {
 }
 
 async fn summary(state: &AppState, check: Check) -> Result<CheckSummary, ApiError> {
-    let mut all = summarise(state, vec![check]).await?;
+    let mut all = summarize(state, vec![check]).await?;
     all.pop().ok_or(ApiError::NotFound)
 }
 
 /// Each check with its state now, its uptime and its latest latencies.
-async fn summarise(state: &AppState, checks: Vec<Check>) -> Result<Vec<CheckSummary>, ApiError> {
+async fn summarize(state: &AppState, checks: Vec<Check>) -> Result<Vec<CheckSummary>, ApiError> {
     let now = Utc::now().timestamp();
     let (day, month, mut recent) = match state.sampler.store() {
         Some(metrics) => (

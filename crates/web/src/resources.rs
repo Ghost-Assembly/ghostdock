@@ -114,7 +114,7 @@ pub fn Charts(
     }
 }
 
-/// The bar colour a recommendation earns: its worst flag.
+/// The bar color a recommendation earns: its worst flag.
 #[must_use]
 pub fn sizing_state(r: &shared::metrics::Recommendation) -> &'static str {
     use shared::metrics::Severity;

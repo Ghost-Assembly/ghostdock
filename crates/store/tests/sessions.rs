@@ -1,6 +1,6 @@
 //! Storage contract for sessions.
 //!
-//! These pin the behaviour the web-facing `SessionStore` adapter depends on,
+//! These pin the behavior the web-facing `SessionStore` adapter depends on,
 //! notably that `session_create` reports id collisions instead of silently
 //! overwriting an existing session.
 

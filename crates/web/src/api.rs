@@ -18,7 +18,7 @@ use shared::logs::Logs;
 use shared::metrics::{ContainerFigures, Now, Range, Recommendation, Series, Target};
 use shared::source::{
     Credential, DiscoverRequest, Discovery, ImportRequest, ImportResult, NewCredential,
-    NewGitStack, NewRepo, Repo, StackEnv, StackEnvKeys,
+    NewGitStack, NewRepo, Repo, StackEnvKeys,
 };
 use shared::stack::Stack;
 use shared::token::{ApiToken, CreatedApiToken, NewApiToken};
@@ -367,11 +367,6 @@ pub async fn set_stack_env_one(
 
 pub async fn delete_stack_env_one(stack_id: i64, key: &str) -> Result<StackEnvKeys> {
     decode(exchange("DELETE", &env_path(stack_id, key), None).await?)
-}
-
-#[allow(dead_code)]
-pub async fn set_stack_env(stack_id: i64, env: &StackEnv) -> Result<StackEnvKeys> {
-    put(&format!("/stacks/{stack_id}/env"), env).await
 }
 
 // ---- updates ----------------------------------------------------------

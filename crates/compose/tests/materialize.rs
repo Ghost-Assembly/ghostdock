@@ -1,4 +1,4 @@
-//! Materialising a stack's project directory.
+//! Materializing a stack's project directory.
 
 use std::os::unix::fs::PermissionsExt;
 
@@ -17,7 +17,7 @@ async fn writes_the_compose_file_into_a_directory_named_for_the_stack() {
     let compose = Compose::new(root.path());
 
     let dir = compose
-        .materialise("blog", "services: {}\n", &[])
+        .materialize("blog", "services: {}\n", &[])
         .await
         .unwrap();
 
@@ -34,7 +34,7 @@ async fn the_env_file_is_readable_only_by_its_owner() {
     let compose = Compose::new(root.path());
 
     let dir = compose
-        .materialise("secrets", "services: {}\n", &vars(&[("TOKEN", "hunter2")]))
+        .materialize("secrets", "services: {}\n", &vars(&[("TOKEN", "hunter2")]))
         .await
         .unwrap();
 
@@ -48,6 +48,33 @@ async fn the_env_file_is_readable_only_by_its_owner() {
         mode, 0o600,
         "a stack's .env holds its secrets and must not be world-readable"
     );
+}
+
+#[tokio::test]
+async fn an_existing_world_readable_env_file_is_made_private() {
+    // A mode given at creation does nothing to a file that already exists:
+    // one left 0644 by an older version, a restore or a hand edit would
+    // otherwise keep the new secrets world-readable.
+    let root = tempfile::tempdir().unwrap();
+    let compose = Compose::new(root.path());
+    let dir = root.path().join("app");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(ENV_FILE), "OLD=1\n").unwrap();
+    std::fs::set_permissions(dir.join(ENV_FILE), std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    compose
+        .materialize("app", "services: {}\n", &vars(&[("TOKEN", "hunter2")]))
+        .await
+        .unwrap();
+
+    let mode = std::fs::metadata(dir.join(ENV_FILE))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600, "the .env must end up private however it began");
+    let written = std::fs::read_to_string(dir.join(ENV_FILE)).unwrap();
+    assert!(!written.contains("OLD"), "the old contents are replaced");
 }
 
 #[tokio::test]
@@ -87,11 +114,11 @@ async fn removing_every_variable_removes_the_env_file() {
     let compose = Compose::new(root.path());
 
     compose
-        .materialise("app", "services: {}\n", &vars(&[("GONE", "1")]))
+        .materialize("app", "services: {}\n", &vars(&[("GONE", "1")]))
         .await
         .unwrap();
     let dir = compose
-        .materialise("app", "services: {}\n", &[])
+        .materialize("app", "services: {}\n", &[])
         .await
         .unwrap();
 
@@ -108,7 +135,7 @@ async fn a_traversing_name_is_refused_before_anything_is_written() {
 
     assert!(
         compose
-            .materialise("../escape", "services: {}\n", &[])
+            .materialize("../escape", "services: {}\n", &[])
             .await
             .is_err()
     );
@@ -125,7 +152,7 @@ async fn forgetting_a_stack_removes_its_env_file_and_nothing_else() {
     let root = tempfile::tempdir().unwrap();
     let compose = Compose::new(root.path());
     let dir = compose
-        .materialise("app", "services: {}\n", &vars(&[("TOKEN", "hunter2")]))
+        .materialize("app", "services: {}\n", &vars(&[("TOKEN", "hunter2")]))
         .await
         .unwrap();
     std::fs::create_dir_all(dir.join("data")).unwrap();

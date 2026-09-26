@@ -78,7 +78,7 @@ pub fn ApiReference() -> impl IntoView {
     }
 }
 
-/// A row for one endpoint. Grey: a reference has no state to colour.
+/// A row for one endpoint. Gray: a reference has no state to color.
 fn endpoint_row(endpoint: Endpoint) -> impl IntoView {
     view! {
         <Row
