@@ -9,6 +9,10 @@ pub mod audit;
 pub mod checks;
 pub mod hosts;
 pub mod metrics;
+// One implementation with `compose`, which writes a stack's `.env` the same
+// way. Included by path because neither crate may depend on the other.
+#[path = "../../compose/src/private_file.rs"]
+mod private_file;
 pub mod secrets;
 pub mod sessions;
 pub mod sources;

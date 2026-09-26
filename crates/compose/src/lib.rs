@@ -10,6 +10,7 @@
 
 pub mod command;
 pub mod env;
+mod private_file;
 pub mod slug;
 
 use std::path::{Path, PathBuf};
@@ -297,26 +298,15 @@ async fn write_env(dir: &Path, vars: &[(String, String)]) -> Result<Option<PathB
 
 /// Writes a file only the owner can read.
 ///
-/// The `.env` holds a stack's secrets, so it must never be world-readable —
-/// and the mode has to be set at creation, not after, or there is a window
-/// where it is not.
+/// The `.env` holds a stack's secrets, so it must never be world-readable,
+/// however the file it replaces was left.
 async fn write_private(path: &Path, contents: &str) -> Result<()> {
-    use tokio::io::AsyncWriteExt;
-
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
+    let owned = path.to_path_buf();
+    let bytes = contents.as_bytes().to_vec();
+    tokio::task::spawn_blocking(move || private_file::write_private(&owned, &bytes, true))
         .await
-        .map_err(|source| Error::Io {
-            context: format!("writing {}", path.display()),
-            source,
-        })?;
-
-    file.write_all(contents.as_bytes())
-        .await
+        .map_err(std::io::Error::other)
+        .and_then(|written| written)
         .map_err(|source| Error::Io {
             context: format!("writing {}", path.display()),
             source,

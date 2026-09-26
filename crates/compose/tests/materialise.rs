@@ -51,6 +51,33 @@ async fn the_env_file_is_readable_only_by_its_owner() {
 }
 
 #[tokio::test]
+async fn an_existing_world_readable_env_file_is_made_private() {
+    // A mode given at creation does nothing to a file that already exists:
+    // one left 0644 by an older version, a restore or a hand edit would
+    // otherwise keep the new secrets world-readable.
+    let root = tempfile::tempdir().unwrap();
+    let compose = Compose::new(root.path());
+    let dir = root.path().join("app");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(ENV_FILE), "OLD=1\n").unwrap();
+    std::fs::set_permissions(dir.join(ENV_FILE), std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    compose
+        .materialise("app", "services: {}\n", &vars(&[("TOKEN", "hunter2")]))
+        .await
+        .unwrap();
+
+    let mode = std::fs::metadata(dir.join(ENV_FILE))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600, "the .env must end up private however it began");
+    let written = std::fs::read_to_string(dir.join(ENV_FILE)).unwrap();
+    assert!(!written.contains("OLD"), "the old contents are replaced");
+}
+
+#[tokio::test]
 async fn a_git_stacks_env_file_is_written_alone_by_the_same_rules() {
     // Its compose file stays in the repository; only the .env is written,
     // private, and removed when the last variable goes.

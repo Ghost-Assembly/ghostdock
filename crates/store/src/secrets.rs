@@ -16,6 +16,8 @@ use base64::engine::general_purpose::STANDARD as B64;
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use zeroize::Zeroize as _;
 
+use crate::private_file;
+
 /// Prefix on every sealed value, so the format can change later without
 /// guessing at what an old row contains.
 const VERSION: &str = "v1";
@@ -201,25 +203,13 @@ fn decode_key(encoded: &str) -> Option<[u8; 32]> {
     B64.decode(encoded).ok()?.as_slice().try_into().ok()
 }
 
-/// Writes key material readable only by its owner.
+/// Writes key material readable only by its owner, and never over a key
+/// that is already there.
 ///
-/// The mode is set at creation rather than afterwards, so the key is never
-/// briefly world-readable.
+/// Flushed to disk before any secret is sealed with it: a key lost in a
+/// crash after values were sealed under it would make them unreadable.
 fn write_private(path: &Path, bytes: &[u8]) -> SecretResult<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|source| SecretError::Io {
-            context: format!("creating {}", path.display()),
-            source,
-        })?;
-
-    file.write_all(bytes).map_err(|source| SecretError::Io {
+    private_file::write_private(path, bytes, false).map_err(|source| SecretError::Io {
         context: format!("writing {}", path.display()),
         source,
     })
