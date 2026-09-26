@@ -135,7 +135,10 @@ impl Store {
     /// key here would be one keystroke away from becoming a default.
     pub async fn open_in_memory() -> Result<Self> {
         let mut key = [0u8; 32];
-        getrandom::fill(&mut key).expect("system randomness");
+        getrandom::fill(&mut key).map_err(|e| secrets::SecretError::Io {
+            context: "generating a key".to_owned(),
+            source: std::io::Error::other(e),
+        })?;
         let opts = SqliteConnectOptions::new()
             .in_memory(true)
             .foreign_keys(true);
