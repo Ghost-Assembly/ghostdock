@@ -13,7 +13,7 @@ use shared::logs::{LogLine, Resume, Stream};
 use web_sys::{CloseEvent, MessageEvent};
 
 use crate::screen::Screen;
-use crate::ui::{ErrorNotice, Field, Icon, OutputLine, Topbar, came_from, pinned, to_bottom};
+use crate::ui::{ErrorNotice, Icon, LogSearch, OutputLine, Topbar, came_from, pinned, to_bottom};
 use crate::{api, socket};
 
 /// Most lines kept on screen. Following a chatty container for an hour would
@@ -212,17 +212,7 @@ pub fn ContainerLogs() -> impl IntoView {
 
         <ErrorNotice error />
 
-        <Field label="Search">
-            <input
-                class="field-input"
-                type="search"
-                autocapitalize="none"
-                spellcheck="false"
-                placeholder="error, timeout, 500"
-                prop:value=move || filter.get()
-                on:input=move |ev| filter.set(event_target_value(&ev))
-            />
-        </Field>
+        <LogSearch value=filter on_input=Callback::new(move |typed| filter.set(typed)) />
 
         <div class="actions actions-pair">
             <button

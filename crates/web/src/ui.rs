@@ -178,6 +178,25 @@ pub fn Field(label: &'static str, children: Children) -> impl IntoView {
     }
 }
 
+/// The search box over a list of log lines. What it shows and what typing
+/// does are the screen's: one filters at once, another waits for a pause.
+#[component]
+pub fn LogSearch(#[prop(into)] value: Signal<String>, on_input: Callback<String>) -> impl IntoView {
+    view! {
+        <Field label="Search">
+            <input
+                class="field-input"
+                type="search"
+                autocapitalize="none"
+                spellcheck="false"
+                placeholder="error, timeout, 500"
+                prop:value=move || value.get()
+                on:input=move |ev| on_input.run(event_target_value(&ev))
+            />
+        </Field>
+    }
+}
+
 /// A labelled line of text to type. One component for every such field, so
 /// its code is in the bundle once.
 #[component]
