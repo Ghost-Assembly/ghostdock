@@ -102,22 +102,20 @@ async fn run(
 /// environment rather than name the program, and often carry a secret, so
 /// they are skipped and not counted.
 ///
-/// Because quoting is not understood, a quote or backslash could carry part
-/// of a value into what looks like the program (`A="x y" cmd` reads `y"` as
-/// the program). So the program is named only when it is a plain name and
-/// nothing skipped before it held a quote or backslash; otherwise the entry
-/// says only how many words the command had.
+/// The shell is not being parsed, so anything but plain characters before
+/// the program (a quote, a backslash, `$(…)`, a backtick) could carry part
+/// of a value into what looks like the program: `A="x y" cmd` reads `y"`,
+/// and `A=$(cat /run/secrets/x ) cmd` reads the secret's path. So the
+/// program is named only when every word up to and including it is plain;
+/// otherwise the entry says only how many words the command had. After the
+/// program nothing is read but the count.
 fn audited(command: &str) -> String {
     let words: Vec<&str> = command.split_whitespace().collect();
     let skipped = words.iter().take_while(|w| is_assignment(w)).count();
-    let quoted = words
-        .iter()
-        .take(skipped)
-        .any(|w| w.contains(['"', '\'', '\\']));
     let Some(program) = words.get(skipped) else {
         return "variable assignments only".to_owned();
     };
-    if quoted || !is_plain(program) {
+    if !words.get(..=skipped).is_some_and(plain_up_to_program) {
         return match words.len() {
             1 => "a command, 1 word".to_owned(),
             n => format!("a command, {n} words"),
@@ -131,21 +129,40 @@ fn audited(command: &str) -> String {
     }
 }
 
-/// Whether a word could only be a program's name or path.
+/// Whether the leading assignments and the program that ends `leading` are
+/// all plain: the program entirely, and each assignment a name, one `=`,
+/// and a plain (possibly empty) value. An allowlist, so anything the shell
+/// might treat specially disqualifies without having to be named.
+fn plain_up_to_program(leading: &[&str]) -> bool {
+    let Some((program, assignments)) = leading.split_last() else {
+        return false;
+    };
+    is_plain(program)
+        && assignments.iter().all(|word| {
+            word.split_once('=')
+                .is_some_and(|(name, value)| is_name(name) && is_plain(value))
+        })
+}
+
+/// Whether every character is in `[A-Za-z0-9_./+-]`.
 fn is_plain(word: &str) -> bool {
     word.chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '+' | '-'))
 }
 
-/// Whether a word is a shell variable assignment, `NAME=value`.
+/// Whether a word has the shape of a shell variable assignment, `NAME=…`,
+/// whatever follows the `=`.
 fn is_assignment(word: &str) -> bool {
-    word.split_once('=').is_some_and(|(name, _)| {
-        let mut chars = name.chars();
-        chars
-            .next()
-            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-    })
+    word.split_once('=').is_some_and(|(name, _)| is_name(name))
+}
+
+/// Whether `name` is a shell variable name.
+fn is_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Upgrades to a WebSocket carrying one shell session.
@@ -346,5 +363,34 @@ mod tests {
         // Not a plain program name.
         assert_eq!(audited("--opt=x run"), "a command, 2 words");
         assert_eq!(audited("\"x\""), "a command, 1 word");
+    }
+
+    #[test]
+    fn a_substitution_before_the_program_leaves_only_a_word_count() {
+        // Its output is the value, and its words can land where the
+        // program would be read.
+        assert_eq!(
+            audited("TOKEN=$(cat /run/secrets/db_password ) cmd args"),
+            "a command, 5 words"
+        );
+        assert_eq!(
+            audited("TOKEN=`cat /run/secrets/db_password ` cmd args"),
+            "a command, 5 words"
+        );
+        assert_eq!(audited("A=1 B=$(id -un ) cmd"), "a command, 5 words");
+        assert_eq!(
+            audited("PASSWORD=$(cat /run/secrets/x) psql"),
+            "a command, 3 words"
+        );
+        assert_eq!(audited("TOKEN=`cat` psql"), "a command, 2 words");
+        assert_eq!(audited("X=a=b cmd"), "a command, 2 words");
+        assert_eq!(audited("~/bin/run"), "a command, 1 word");
+        assert_eq!(audited("TOKEN=\u{e9} cmd"), "a command, 2 words");
+    }
+
+    #[test]
+    fn a_substitution_after_the_program_is_only_counted() {
+        assert_eq!(audited("cmd $(echo x)"), "cmd, 2 arguments");
+        assert_eq!(audited("EMPTY= cmd `id`"), "cmd, 1 argument");
     }
 }
