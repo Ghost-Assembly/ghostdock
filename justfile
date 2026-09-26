@@ -24,7 +24,8 @@ lint:
     cargo clippy -p web --target wasm32-unknown-unknown -- -D warnings
 
 # Run the test suite.
-# `web` is excluded: it targets wasm32 and is exercised by `test-web`.
+# `web` builds only for wasm32 (see `check-wasm`), but its pure logic (chart
+# geometry, encoders, …) is also tested natively, so it runs here too.
 test:
     cargo test --workspace --exclude web --all-features
     cargo test -p web
@@ -41,9 +42,10 @@ test-e2e: build
     tests/e2e/run.sh
 
 # Mobile smoke path through a real browser.
-# Needs a server running against a FRESH database, since it exercises
-# first-run setup. Not part of `ci` yet: that needs browsers installed on the
-# runner, which is packaging work.
+# Needs a server already running against a FRESH database, since it exercises
+# first-run setup. Not part of `ci` yet: unlike `test-e2e`, which starts and
+# stops its own server per test, this one expects the server lifecycle to
+# already be handled by the caller.
 #   GHOSTDOCK_URL=http://127.0.0.1:8080 just test-web
 test-web:
     # Installed at the repo root: ES modules resolve node_modules by walking
