@@ -119,12 +119,7 @@ async fn create(
         .store
         .stack_create(host_id, &slug, name, &new.compose_yaml)
         .await
-        .map_err(|e| match e {
-            store::Error::SlugTaken => ApiError::Conflict(format!(
-                "A stack named {slug} already exists. Compose projects must be unique."
-            )),
-            other => ApiError::from(other),
-        })?;
+        .map_err(ApiError::if_stack_taken(&slug))?;
 
     crate::audit::record(&state, &principal, "register stack", &created.slug, None).await;
     Ok(Json(created))

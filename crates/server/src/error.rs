@@ -38,6 +38,22 @@ pub enum ApiError {
 }
 
 impl ApiError {
+    /// Maps a store error to a conflict saying `message` when the name was
+    /// already taken, and any other store error as usual.
+    pub fn if_taken(message: String) -> impl FnOnce(store::Error) -> Self {
+        move |e| match e {
+            store::Error::SlugTaken => Self::Conflict(message),
+            other => Self::from(other),
+        }
+    }
+
+    /// [`Self::if_taken`] for a stack, whose name becomes its Compose project.
+    pub fn if_stack_taken(slug: &str) -> impl FnOnce(store::Error) -> Self + use<> {
+        Self::if_taken(format!(
+            "A stack named {slug} already exists. Compose projects must be unique."
+        ))
+    }
+
     fn parts(&self) -> (StatusCode, &'static str) {
         match self {
             Self::NotAuthenticated => (StatusCode::UNAUTHORIZED, "not_authenticated"),

@@ -137,12 +137,9 @@ async fn create_credential(
         .store
         .credential_create(name, username, &new.secret)
         .await
-        .map_err(|e| match e {
-            store::Error::SlugTaken => {
-                ApiError::Conflict(format!("A credential named {name} already exists."))
-            }
-            other => ApiError::from(other),
-        })?;
+        .map_err(ApiError::if_taken(format!(
+            "A credential named {name} already exists."
+        )))?;
 
     // The name, never the secret. An audit trail that quotes what it
     // records would be the easiest place in the product to read one.
@@ -198,12 +195,9 @@ async fn create_repo(
         .store
         .repo_create(url, new.credential_id)
         .await
-        .map_err(|e| match e {
-            store::Error::SlugTaken => {
-                ApiError::Conflict("That repository is already registered.".to_owned())
-            }
-            other => ApiError::from(other),
-        })?;
+        .map_err(ApiError::if_taken(
+            "That repository is already registered.".to_owned(),
+        ))?;
 
     crate::audit::record(&state, &principal, "add repository", &created.url, None).await;
     Ok(Json(created))
@@ -316,12 +310,7 @@ async fn create_git_stack(
         .store
         .stack_create_git(host_id, &slug, name, new.repo_id, git_ref, compose_path)
         .await
-        .map_err(|e| match e {
-            store::Error::SlugTaken => ApiError::Conflict(format!(
-                "A stack named {slug} already exists. Compose projects must be unique."
-            )),
-            other => ApiError::from(other),
-        })?;
+        .map_err(ApiError::if_stack_taken(&slug))?;
 
     crate::audit::record(
         &state,
