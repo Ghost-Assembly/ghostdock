@@ -39,7 +39,11 @@ ignore = [
 
 [bans]
 multiple-versions = "warn"
+wildcards = "deny"
 
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# crates.io only. A git or path dependency would both bypass the advisory
+# database and leak an internal URL into a public lockfile.
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
