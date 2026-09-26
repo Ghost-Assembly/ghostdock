@@ -1,6 +1,7 @@
 # GhostDock
 
-A self-hosted, mobile-first manager for Docker Compose stacks.
+A self-hosted, mobile-first manager for Docker Compose stacks, with Git-backed
+deploys and update checks.
 
 **Status: pre-release.** Every v1 feature is built and tested against a real
 Docker daemon. It has not yet been run by anyone but its authors.
@@ -55,6 +56,9 @@ invokes the official CLI rather than reimplementing the spec.
 | `GHOSTDOCK_UI_DIR` | `/usr/share/ghostdock/web` | Where the built web client is served from |
 | `DOCKER_HOST` | daemon default | Docker or rootless Podman socket |
 | `GHOSTDOCK_ALLOWED_ORIGINS` | *(none)* | Extra origins allowed to open a container shell, comma separated. Needed only behind a reverse proxy that does not preserve the `Host` header. |
+| `GHOSTDOCK_DOCKER_BIN` | `docker` | The binary run for every Compose command |
+| `GHOSTDOCK_GIT_BIN` | `git` | The binary run for every Git command |
+| `RUST_LOG` | `info,ghostdock=debug,server=debug` | Log filter ([`tracing_subscriber::EnvFilter`](https://docs.rs/tracing-subscriber) syntax) |
 
 GhostDock reads the host's CPU, memory and load, and the disk Docker uses, with
 no configuration. Mount the host's `/proc` at `/host/proc` for its network
@@ -69,7 +73,7 @@ same `mise.toml`.
 
 ```bash
 just setup   # install the pinned toolchain, fetch dependencies
-just ci      # everything CI runs: fmt, lint, test, security, build
+just ci      # everything CI runs: fmt, lint, check-wasm, test, security, build
 just run     # run the server locally
 just         # list all recipes
 ```
@@ -114,8 +118,8 @@ no default password and no anonymous mode.
 
 ### The data directory must be mounted at the same path
 
-Mount it as `/var/lib/ghostdock:/var/lib/ghostdock` -- the same absolute path on the
-host and inside the container -- and not, for example,
+Mount it as `/var/lib/ghostdock:/var/lib/ghostdock` — the same absolute path on the
+host and inside the container — and not, for example,
 `/srv/ghostdock:/var/lib/ghostdock`.
 
 GhostDock runs `docker compose` inside its own container, but the Docker daemon
@@ -161,7 +165,7 @@ labels:
 
 An Unraid (`net.unraid.docker.icon`) or Homepage (`homepage.icon`) icon label
 is used too, when the file it names is one GhostDock has. A stack with no match
-shows its initials. The icons are about 150 monochrome marks from
+shows its initials. The icons are 159 monochrome marks from
 [Simple Icons](https://simpleicons.org) (CC0), shipped with GhostDock and drawn
 in the text color; nothing is fetched from elsewhere. The names a label can use
 are the file names in `crates/web/brand-icons/`.
@@ -177,7 +181,7 @@ base64 (`openssl rand -base64 32`).
 
 ### Access
 
-Anything that can reach the Docker socket is root on the host, so treat an
+Anything that can reach the Docker socket is root on the host, so treat a
 GhostDock account the same way. Every account is an administrator. Accounts are
 added and removed under Settings, and changing your password signs out your
 other devices. After repeated failed sign-ins, a username (or, in larger
