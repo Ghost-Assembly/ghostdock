@@ -27,12 +27,10 @@ fn main() -> anyhow::Result<()> {
 /// carries no curl, and this is one request to a known local address.
 fn healthcheck() -> bool {
     use std::io::{Read, Write};
-    use std::net::{SocketAddr, TcpStream};
+    use std::net::TcpStream;
     use std::time::Duration;
 
-    let bind = env_or("GHOSTDOCK_BIND", "0.0.0.0:8080");
-    let port = bind.rsplit_once(':').map_or("8080", |(_, port)| port);
-    let Ok(addr) = format!("127.0.0.1:{port}").parse::<SocketAddr>() else {
+    let Some(addr) = health_addr(&env_or("GHOSTDOCK_BIND", "0.0.0.0:8080")) else {
         return false;
     };
 
@@ -51,6 +49,24 @@ fn healthcheck() -> bool {
     let mut response = String::new();
     let _ = stream.read_to_string(&mut response);
     response.starts_with("HTTP/1.0 200") || response.starts_with("HTTP/1.1 200")
+}
+
+/// Where the healthcheck finds the server bound at `bind`: that address,
+/// or loopback when it listens on every interface. A server bound to one
+/// interface is not listening on loopback at all.
+fn health_addr(bind: &str) -> Option<std::net::SocketAddr> {
+    use std::net::{Ipv4Addr, Ipv6Addr, ToSocketAddrs};
+
+    // Resolved as the server resolves it, so a name works here too.
+    let mut addr = bind.to_socket_addrs().ok()?.next()?;
+    if addr.ip().is_unspecified() {
+        addr.set_ip(if addr.is_ipv4() {
+            Ipv4Addr::LOCALHOST.into()
+        } else {
+            Ipv6Addr::LOCALHOST.into()
+        });
+    }
+    Some(addr)
 }
 
 #[tokio::main]
@@ -276,4 +292,24 @@ fn env_or(key: &str, default: &str) -> String {
 
 fn env_flag(key: &str) -> bool {
     std::env::var(key).is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::health_addr;
+
+    #[test]
+    fn the_healthcheck_asks_where_the_server_listens() {
+        let at = |bind: &str| health_addr(bind).map(|a| a.to_string());
+        // Every interface includes loopback, which is always reachable.
+        assert_eq!(at("0.0.0.0:8080").as_deref(), Some("127.0.0.1:8080"));
+        assert_eq!(at("[::]:9000").as_deref(), Some("[::1]:9000"));
+        // One interface only: loopback would be refused there.
+        assert_eq!(at("192.0.2.7:9000").as_deref(), Some("192.0.2.7:9000"));
+        assert_eq!(
+            at("[2001:db8::7]:9000").as_deref(),
+            Some("[2001:db8::7]:9000")
+        );
+        assert_eq!(at("127.0.0.1:8081").as_deref(), Some("127.0.0.1:8081"));
+    }
 }
