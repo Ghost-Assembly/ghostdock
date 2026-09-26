@@ -23,7 +23,9 @@ pub struct Limits {
     pub per_address: u32,
     pub window: Duration,
     /// Most usernames and addresses remembered at once, so a flood of
-    /// made-up usernames cannot grow memory without bound.
+    /// made-up usernames cannot grow memory without bound. A lockout is
+    /// never forgotten to make room; when every entry is one, a new name
+    /// goes uncounted until one ends.
     pub capacity: usize,
 }
 
@@ -84,13 +86,23 @@ impl LoginLimiter {
             if !windows.contains_key(&key) && windows.len() >= self.limits.capacity {
                 let window = self.limits.window;
                 windows.retain(|_, w| now.duration_since(w.started) < window);
-                if windows.len() >= self.limits.capacity
-                    && let Some(oldest) = windows
+                if windows.len() >= self.limits.capacity {
+                    // Only an entry holding no one out may make room.
+                    // Evicting a lockout would let a burst of made-up names
+                    // buy its owner a fresh allowance.
+                    let oldest = windows
                         .iter()
+                        .filter(|(k, w)| w.failures < self.limit(k))
                         .min_by_key(|(_, w)| w.started)
-                        .map(|(k, _)| k.clone())
-                {
-                    windows.remove(&oldest);
+                        .map(|(k, _)| k.clone());
+                    match oldest {
+                        Some(oldest) => {
+                            windows.remove(&oldest);
+                        }
+                        // Every entry is a lockout: this one goes uncounted
+                        // rather than growing memory past the bound.
+                        None => continue,
+                    }
                 }
             }
             let entry = windows.entry(key).or_insert(Window {
@@ -123,6 +135,13 @@ impl LoginLimiter {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .len()
+    }
+
+    fn limit(&self, key: &Key) -> u32 {
+        match key {
+            Key::User(_) => self.limits.per_user,
+            Key::Address(_) => self.limits.per_address,
+        }
     }
 
     fn keys(&self, username: &str, address: Option<IpAddr>) -> impl Iterator<Item = (Key, u32)> {
