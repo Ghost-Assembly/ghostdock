@@ -75,7 +75,7 @@ bollard = "0.21.1"
 # Web client (wasm only)
 leptos = { version = "0.8.20", features = ["csr"] }
 leptos_router = "0.8.15"
-gloo-net = { version = "0.7.0", default-features = false, features = ["http", "json"] }
+gloo-net = { version = "0.8.0", default-features = false, features = ["http", "json"] }
 web-sys = "0.3.105"
 wasm-bindgen = "0.2.128"
 wasm-bindgen-futures = "0.4.78"
